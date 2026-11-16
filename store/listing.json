@@ -1,0 +1,28 @@
+{
+  "name": "GPT Images to Tripo3d",
+  "summary": "Turn text prompts into images, create Tripo 3D models, and save FBX files to your computer.",
+  "category": "Workflow & Planning",
+  "language": "English",
+  "description": "Text prompts to images. Images to Tripo 3D. FBX files to your computer.\n\nGPT Images to Tripo3d connects your signed-in ChatGPT and Tripo Studio tabs with a folder you choose on your computer.\n\n1. Paste image prompts into the GPT images queue. Each prompt runs in a new ChatGPT chat, and the first generated image is saved to your folder.\n2. Process the images in Tripo Studio, one at a time, using your chosen Studio settings.\n3. Save each FBX export with its reference image in an organized output folder. ZIP exports retain companion texture files.\n\nSet a credit ceiling per model and a model count per run. Watch the folder for newly generated images, stop after the current model, and recover interrupted work using an existing model or a downloaded FBX/ZIP.\n\nRequires desktop Chrome 120+, signed-in ChatGPT and Tripo accounts with access to the needed features, and sufficient service credits or usage allowance. Service subscriptions and credits are separate. Keep the control tab, service tabs and selected drive available during a run.\n\nThe extension uses the services' web interfaces, which can change. Start with one model and inspect the result before a larger batch.\n\nNo API key, local server or native helper. No extension analytics or telemetry. Prompts are sent to ChatGPT and reference images to Tripo when you run their queues. Settings, queues and recovery data are stored locally.\n\nIndependent extension; not affiliated with or endorsed by OpenAI or Tripo.",
+  "single_purpose": "Move user-requested image prompts through ChatGPT image generation and Tripo Studio model generation to organized local FBX exports.",
+  "permissions": {
+    "storage": "Stores queue state, prompts, options and selected tab information locally so interrupted work can resume.",
+    "tabs": "Finds the user-selected ChatGPT and Tripo tabs, opens workflow pages and returns to saved conversations and models.",
+    "scripting": "Injects only bundled ChatGPT and Tripo scripts into their validated supported tabs when the existing receiver is unavailable, such as after extension reload.",
+    "host_permissions": "Automation is limited to ChatGPT and supported Tripo pages. HTTPS access is also needed to fetch signed FBX/ZIP export URLs supplied by Tripo, whose external file-host domains can vary. Export requests omit credentials and referrers. No scripts are injected into unrelated sites."
+  },
+  "remote_code": false,
+  "privacy_policy_url": "https://multipliedtwice.github.io/gpt-images-tripo3d/privacy.html",
+  "support_url": "https://github.com/multipliedtwice/gpt-images-tripo3d/issues",
+  "reviewer_instructions": "Chrome 120+. Sign in to ChatGPT (image generation enabled) and Tripo Studio (credits + FBX export access). Choose a test folder via Folder settings. GPT images: select ChatGPT tab, add an image prompt, Start prompts. Tripo models: select Studio tab; choose Studio settings, set credit ceiling, Models this run=1, Start batch. Check FBX/reference output. Services consume credits/usage. No test credentials supplied. Local UI checks passed; full live workflow not verified in this session.",
+  "data_disclosures": [
+    "Personal communications",
+    "Web history",
+    "Website content"
+  ],
+  "distribution": {
+    "pricing": "Free of charge",
+    "visibility": "Public",
+    "regions": "All regions"
+  }
+}

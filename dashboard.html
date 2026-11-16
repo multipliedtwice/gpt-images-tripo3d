@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GPT Images to Tripo3d</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="dashboard.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <div class="brand">
+        <img class="brand-mark" src="assets/icon.svg" alt="">
+        <h1>GPT Images to Tripo3d</h1>
+      </div>
+      <span class="version">v0.2.3 · local extension</span>
+    </header>
+    <p class="intro">Text prompts → images → Tripo 3D → FBX on your computer</p>
+    <nav class="tabs" role="tablist">
+      <button id="tab-gpt" class="tab" role="tab" aria-selected="true" aria-controls="view-gpt">GPT images</button>
+      <button id="tab-tripo" class="tab" role="tab" aria-selected="false" aria-controls="view-tripo" tabindex="-1">Tripo models</button>
+    </nav>
+    <div id="view-gpt" class="workspace" role="tabpanel" aria-labelledby="tab-gpt">
+      <aside class="setup">
+        <section class="card">
+          <div class="section-heading"><span class="step">1</span><h2>Connect ChatGPT</h2></div>
+          <label for="gpt-select">ChatGPT tab</label>
+          <select id="gpt-select"><option value="">No ChatGPT tab found</option></select>
+          <div class="button-row"><button id="gpt-refresh" class="button secondary">Refresh tabs</button><button id="gpt-open" class="button quiet">Open ChatGPT ↗</button></div>
+          <div id="gpt-info" class="studio-info">Open ChatGPT and sign in. Each prompt runs in a new chat in that tab.</div>
+        </section>
+        <section class="card">
+          <div class="section-heading"><span class="step">2</span><h2>Paste prompts</h2></div>
+          <label for="gpt-prompts">Prompts</label>
+          <textarea id="gpt-prompts" rows="9" placeholder="First prompt&#10;&#10;Second prompt"></textarea>
+          <p class="hint">Separate prompts with a blank line. Each prompt is sent exactly as written.</p>
+          <button id="gpt-add" class="button secondary full">Add to queue</button>
+        </section>
+        <section class="card">
+          <div class="section-heading"><span class="step">3</span><h2>Generate images</h2></div>
+          <p id="gpt-folder" class="hint gpt-folder">Choose a folder in the Tripo models tab first.</p>
+          <button id="folder-settings" class="link-button folder-settings" type="button">Folder settings →</button>
+          <button id="gpt-start" class="button primary full" disabled>Start prompts</button>
+          <button id="gpt-stop" class="button secondary full" disabled>Stop after this image</button>
+        </section>
+      </aside>
+      <main>
+        <section class="status-card" aria-live="polite">
+          <div class="status-top"><span id="gpt-badge" class="badge idle">READY</span><span id="gpt-counter" class="run-counter"></span></div>
+          <h2 id="gpt-title">Paste prompts to begin</h2>
+          <p id="gpt-detail">Each prompt runs in a new ChatGPT chat. The first image is saved to your Tripo folder.</p>
+          <div class="stats"><div><strong id="gpt-pending">0</strong><span>queued</span></div><div><strong id="gpt-saved">0</strong><span>saved</span></div><div><strong id="gpt-failed">0</strong><span>failed</span></div></div>
+        </section>
+        <section class="card queue-card">
+          <div class="queue-heading"><div><h2>Prompt queue</h2><p class="hint">One prompt at a time. A sent prompt is never sent again unless you choose Send again.</p></div><button id="gpt-clear" class="button quiet">Clear finished</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Prompt</th><th>Progress</th><th>Image file</th></tr></thead><tbody id="gpt-body"></tbody></table></div>
+          <div id="gpt-empty" class="empty-state"><span class="empty-symbol">＋</span><h3>Your prompts will appear here</h3><p>Paste prompts and click Add to queue.</p></div>
+        </section>
+        <footer>Keep this control tab and the ChatGPT tab open during a run. Images land in the folder root as PNG, JPEG or WebP.</footer>
+      </main>
+    </div>
+    <div id="view-tripo" class="workspace" role="tabpanel" aria-labelledby="tab-tripo" hidden>
+      <aside class="setup">
+        <section class="card">
+          <div class="section-heading"><span class="step">1</span><h2>Choose your folder</h2></div>
+          <div class="folder-box"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3V7Z" stroke="currentColor" stroke-width="1.6"/></svg><div><strong id="folder-name">No folder selected</strong><span id="folder-meta">Select a folder on your SD card or computer.</span></div></div>
+          <button id="choose-folder" class="button secondary full">Choose folder</button>
+          <button id="grant-folder" class="button secondary full" hidden>Reconnect folder</button>
+          <p class="hint">Only PNG, JPG, JPEG and WebP images in the root are queued. Subfolders are skipped.</p>
+        </section>
+        <section class="card">
+          <div class="section-heading"><span class="step">2</span><h2>Connect Tripo Studio</h2></div>
+          <label for="studio-select">Studio tab</label>
+          <select id="studio-select"><option value="">No Studio tab found</option></select>
+          <div class="button-row"><button id="refresh-studio" class="button secondary">Refresh tabs</button><button id="open-studio" class="button quiet">Open Studio ↗</button></div>
+          <div id="studio-info" class="studio-info">Sign in to Studio and choose your generation settings there.</div>
+        </section>
+        <section class="card">
+          <div class="section-heading"><span class="step">3</span><h2>Run the queue</h2></div>
+          <div class="field-pair"><div><label for="max-credits">Credit ceiling / model</label><input id="max-credits" type="number" value="55" min="1" max="10000" step="1"></div><div><label for="model-limit">Models this run</label><input id="model-limit" type="number" value="1" min="0" max="100000" step="1"></div></div>
+          <p class="hint">Start with 1 to check the result. Set models to 0 for no limit. Your current Studio settings are used.</p>
+          <label class="checkbox"><input id="watch-folder" type="checkbox" checked><span>Watch for new root images while running</span></label>
+          <button id="start" class="button primary full" disabled>Start batch</button>
+          <button id="stop" class="button secondary full" disabled>Stop after this model</button>
+        </section>
+      </aside>
+      <main>
+        <section class="status-card" aria-live="polite">
+          <div class="status-top"><span id="state-badge" class="badge idle">READY TO SET UP</span><span id="run-counter" class="run-counter"></span></div>
+          <h2 id="status-title">Pick a folder to begin</h2>
+          <p id="status-detail">Each image stays in the root until its export has been verified and saved.</p>
+          <div class="stats"><div><strong id="pending-count">0</strong><span>root images</span></div><div><strong id="completed-count">0</strong><span>completed</span></div><div><strong id="active-count">0</strong><span>in progress</span></div></div>
+        </section>
+        <section id="recovery" class="recovery" hidden>
+          <div class="eyebrow">Resume existing work</div>
+          <h3 id="recovery-title">A job is waiting</h3>
+          <p id="recovery-detail">Resume reconnects to the saved generation. If needed, select this image’s model in Studio or import its downloaded FBX/ZIP.</p>
+          <div class="button-row"><button id="resume" class="button secondary">Resume job</button><button id="bind-model" class="button secondary">Use selected model</button><button id="import-export" class="button quiet">Use downloaded FBX/ZIP</button></div>
+          <input id="export-file" type="file" accept=".fbx,.zip" hidden>
+        </section>
+        <section class="card queue-card">
+          <div class="queue-heading"><div><h2>Folder queue</h2><p class="hint">One image at a time. Completed folders are never reprocessed.</p></div><button id="rescan" class="button quiet">Rescan</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Reference image</th><th>Progress</th><th>Output folder</th></tr></thead><tbody id="queue-body"></tbody></table></div>
+          <div id="empty-state" class="empty-state"><span class="empty-symbol">＋</span><h3>Your images will appear here</h3><p>Add reference images to the selected folder’s root.</p></div>
+          <p id="queue-note" class="hint queue-note" hidden></p>
+        </section>
+        <footer>Keep this control tab, Studio and the SD card available during a run. You can use other tabs.</footer>
+      </main>
+    </div>
+  </div>
+</body>
+</html>
