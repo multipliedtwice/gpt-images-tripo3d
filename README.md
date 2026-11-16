@@ -1,5 +1,7 @@
 # GPT Images to Tripo3d
 
+![Text prompts to images. Images to 3D. FBX to your computer.](store/production-marquee-1400x560.png)
+
 Text prompts → images → Tripo 3D → FBX on your computer.
 
 A Chrome extension that sends image prompts through your signed-in ChatGPT tab, processes reference images through your signed-in Tripo Studio tab, and organizes each FBX export with its reference in the folder you choose.

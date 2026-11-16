@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPT Images to Tripo3d campaign</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#102447;background:#f5f7fb}.frame{position:relative;width:1280px;height:800px;overflow:hidden;background:#f5f7fb}.brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:17px;letter-spacing:-.02em}.brand img{width:38px;height:38px}.header{position:absolute;top:40px;left:64px}.headline{position:absolute;left:64px;top:105px;font-size:54px;font-weight:700;line-height:1.06;letter-spacing:-.045em;margin:0}.sub{position:absolute;left:66px;top:235px;font-size:16px;color:#52637c;margin:0}.line{position:absolute;top:192px;left:64px;right:64px;border-top:1px solid #ced8e8}.capture{display:block;position:absolute;box-shadow:0 16px 38px #10244718;border-radius:14px}.overview .headline{top:106px;font-size:50px}.overview .workflow-copy{position:absolute;left:66px;top:545px;width:710px;color:#52637c;font-size:24px;line-height:1.4;letter-spacing:-.02em}.overview .line{top:184px}.overview .main-capture{left:64px;top:224px;width:738px}.overview .art{position:absolute;left:856px;top:224px;width:360px;height:444px;object-fit:cover;object-position:right center;border-radius:18px;background:#102447}.caption{position:absolute;left:856px;top:686px;color:#60708a;font-size:12px}.overview .steps{position:absolute;left:64px;bottom:47px;display:flex;gap:42px;font-size:15px;font-weight:650}.steps span{display:flex;align-items:center;gap:10px}.steps b{display:grid;place-items:center;width:27px;height:27px;border-radius:50%;background:#e2eaff;color:#2456c7;font-size:13px}.cards .headline{font-size:52px;top:105px}.cards .sub{top:174px}.cards .line{top:219px}.cards .capture{top:252px;width:342px}.cards .first{left:64px}.cards .second{left:469px}.cards .third{left:874px}.cards .label{position:absolute;bottom:40px;left:64px;font-size:13px;color:#52637c}.small{width:440px;height:280px;background:#0d1932;color:#fff}.small .art{position:absolute;right:0;top:0;width:300px;height:280px;object-fit:cover;object-position:right center}.small .brand{position:absolute;top:22px;left:22px;z-index:1;font-size:11px;gap:7px}.small .brand img{width:29px;height:29px}.small .small-copy{position:absolute;left:22px;top:101px;z-index:1;width:150px;font-size:23px;line-height:1.12;font-weight:700;letter-spacing:-.035em}.small .small-copy span{display:block;margin-top:14px;font-size:12px;font-weight:500;letter-spacing:0}.marquee{width:1400px;height:560px;background:#0d1932;color:#fff}.marquee .brand{position:absolute;top:48px;left:66px}.marquee .brand img{width:42px;height:42px}.marquee .headline{left:66px;top:165px;width:650px;color:#fff;font-size:52px;line-height:1.12}.marquee .art{position:absolute;right:0;top:0;width:840px;height:560px;object-fit:cover;object-position:right center}.marquee .brand,.marquee .headline{z-index:1}.recovery-note{position:absolute;left:64px;top:260px;font-size:20px}
+</style>
+</head>
+<body>
+<main class="frame" id="frame"></main>
+<script>
+const asset = new URLSearchParams(location.search).get('asset') || 'overview';
+const brand = '<div class="brand"><img src="../assets/icon.svg" alt=""><span>GPT Images to Tripo3d</span></div>';
+const image = '<img class="art" src="illustration.png" alt="">';
+const capture = (name, classes) => `<img class="capture ${classes}" data-capture="${name}" alt="">`;
+const templates = {
+ overview: `<div class="header">${brand}</div><h1 class="headline">From a text prompt to local FBX.</h1><div class="line"></div>${capture('overview','main-capture')}${image}<div class="caption">Workflow illustration</div><div class="workflow-copy">Images from ChatGPT. Models from Tripo Studio.<br>Exports saved with their references.</div><div class="steps"><span><b>1</b> Write prompts</span><span><b>2</b> Generate models</span><span><b>3</b> Save FBX</span></div>`,
+ prompts: `<div class="header">${brand}</div><h1 class="headline">Start with your prompts.</h1><p class="sub">Connect ChatGPT, add prompts, and run the image queue.</p><div class="line"></div>${capture('gpt-connect','first')}${capture('gpt-prompt','second')}${capture('gpt-run','third')}<div class="label">Example prompt · not submitted</div>`,
+ models: `<div class="header">${brand}</div><h1 class="headline">Bring images into 3D.</h1><p class="sub">Choose a folder, connect Tripo Studio, and set up your run.</p><div class="line"></div>${capture('model-folder','first')}${capture('model-connect','second')}${capture('model-run','third')}`,
+ recovery: `<div class="header">${brand}</div><h1 class="headline">Recovery controls</h1><div class="line"></div><p class="recovery-note">Recovery controls appear when an existing job needs attention.</p>`,
+ small: `${image}${brand}<div class="small-copy">Prompts.<br>Images.<br>3D models.<span>FBX to your computer</span></div>`,
+ marquee: `${image}${brand}<h1 class="headline">Text prompts to images.<br>Images to 3D.<br>FBX to your computer.</h1>`
+};
+if (!(asset in templates)) throw new Error(`Unknown asset: ${asset}`);
+const frame = document.getElementById('frame');
+frame.className = `frame ${asset}${asset === 'prompts' || asset === 'models' ? ' cards' : ''}`;
+frame.innerHTML = templates[asset];
+</script>
+</body>
+</html>
