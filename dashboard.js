@@ -1,3 +1,6 @@
+import { setupQueueTabs } from "./queue-status.js";
+import { setupMCP } from "./mcp-client.js";
+import { validateTool } from "./mcp-tools.js";
 import { scanImages, readSource, listJobs, createJob, updateJob, getJob, commitExport, resumeCommit } from "./files.js";
 import { sha256 } from "./archive.js";
 import { getPreference, setPreference } from "./db.js";
@@ -37,9 +40,11 @@ const setStatus = (kind, title, detail) => {
 
 const updateControls = () => {
   const busy = state.running || state.starting;
-  for (const id of ["choose-folder", "grant-folder", "studio-select", "refresh-studio", "open-studio", "max-credits", "model-limit", "watch-folder", "rescan", "resume", "bind-model", "import-export"]) $(id).disabled = busy;
+  for (const id of ["choose-folder", "grant-folder", "studio-select", "refresh-studio", "open-studio", "max-credits", "model-limit", "watch-folder", "rescan", "resume", "bind-model", "regenerate", "import-export"]) $(id).disabled = busy;
   $("start").disabled = busy || !state.root || (!state.tabId && !hasSavedExport(state.current));
   $("bind-model").disabled = busy || !state.tabId;
+  $("regenerate").disabled = busy || !state.tabId;
+  $("regenerate").hidden = !state.current || !["submitting", "generating"].includes(state.current.status) || !!state.current.modelId || hasSavedExport(state.current);
   $("stop").disabled = !state.running || state.stop;
   $("stop").textContent = state.stop ? "Stopping after this model…" : "Stop after this model";
   $("grant-folder").hidden = !state.root || state.permission;
@@ -47,13 +52,15 @@ const updateControls = () => {
   if (state.current) {
     $("recovery-title").textContent = state.current.sourceName;
     const paid = ["submitting", "generating", "exporting", "staging", "committing"].includes(state.current.status);
-    $("recovery-detail").textContent = paid ? "Resume checks the existing generation or saved export. It will not click Generate again. If its model cannot be found, select this image’s model in Studio and link it below, or import its downloaded FBX/ZIP." : "This image has not been submitted for generation. Resume uploads it again before checking the credit ceiling. You can also link an existing model or import a downloaded FBX/ZIP.";
+    const instruction = paid ? "Resume checks the existing generation or saved export. It will not click Generate again. If Studio never started this generation, use Regenerate. If its model cannot be found, select this image’s model in Studio and link it below, or import its downloaded FBX/ZIP." : "This image has not been submitted for generation. Resume uploads it again before checking the credit ceiling. You can also link an existing model or import a downloaded FBX/ZIP.";
+    $("recovery-detail").textContent = [state.current.error, instruction].filter(Boolean).join(' ');
   }
   gpt?.refresh();
   const limit = state.options?.limit;
   $("run-counter").textContent = state.running ? `${state.completed}${limit ? ` / ${limit}` : ""} saved this run` : "";
 };
 
+let tripoFilters;
 const renderQueue = () => {
   const unfinished = state.jobs.filter(job => job.status !== "completed");
   const completed = state.jobs.filter(job => job.status === "completed");
@@ -67,13 +74,16 @@ const renderQueue = () => {
   const rows = [
     ...state.images.map(image => ({ name: image.name, job: unfinished.find(job => job.sourceName === image.name), size: image.size })),
     ...unfinished.filter(job => !rootNames.has(job.sourceName)).map(job => ({ name: job.sourceName, job, size: job.sourceSize })),
-    ...completed.slice(-80).reverse().map(job => ({ name: job.sourceName, job, size: job.sourceSize }))
+    ...completed.slice().reverse().map(job => ({ name: job.sourceName, job, size: job.sourceSize }))
   ];
+  tripoFilters?.update(rows.map(row => row.job));
+  const filtered = rows.filter(row => !tripoFilters || tripoFilters.matches(row.job));
+  const visible = filtered.filter(row => row.job?.status !== "completed").concat(filtered.filter(row => row.job?.status === "completed").slice(0, 80));
   const rank = ({ job }) => !job ? 2 : job.status === "completed" ? 3 : job.id === state.current?.id ? 0 : 1;
-  rows.sort((a, b) => rank(a) - rank(b));
+  visible.sort((a, b) => rank(a) - rank(b));
   const body = $("queue-body");
   body.replaceChildren();
-  for (const rowData of rows) {
+  for (const rowData of visible) {
     const row = document.createElement("tr");
     const nameCell = textCell(row, rowData.name);
     const small = document.createElement("span");
@@ -90,8 +100,9 @@ const renderQueue = () => {
     textCell(row, job ? `${job.folderName}/` : "Created after export");
     body.append(row);
   }
-  $("empty-state").hidden = rows.length > 0;
-  $("queue-note").hidden = completed.length <= 80;
+  $("empty-state").hidden = visible.length > 0;
+  if (!visible.length) tripoFilters?.empty($("empty-state"), rows.length, "images");
+  $("queue-note").hidden = completed.length <= 80 || !["all", "completed"].includes(tripoFilters?.selected() || "all");
   $("queue-note").textContent = `Showing the latest 80 of ${completed.length} completed models. All remain in your folder.`;
   updateControls();
 };
@@ -114,10 +125,10 @@ const settings = () => {
   return { maxCredits, limit, watch: $("watch-folder").checked };
 };
 
-const requestFolderPermission = async () => {
+const requestFolderPermission = async (remote = false) => {
   if (!state.root) throw errorWith("Choose your source folder first.", "FOLDER_REQUIRED");
   let permission = await state.root.queryPermission({ mode: "readwrite" });
-  if (permission !== "granted") permission = await state.root.requestPermission({ mode: "readwrite" });
+  if (permission !== "granted" && !remote) permission = await state.root.requestPermission({ mode: "readwrite" });
   state.permission = permission === "granted";
   updateControls();
   if (!state.permission) throw errorWith("Chrome needs permission to read and save files in the selected folder. Click Reconnect folder and allow access.", "FOLDER_PERMISSION");
@@ -204,7 +215,7 @@ const generationStep = async () => {
   await saveJob({ status: "uploaded", error: null, errorCode: null });
   const info = await ensureStudio();
   showStudio(info);
-  if (!Number.isFinite(info.cost) || info.cost <= 0) throw errorWith("The Generate credit cost is not visible. Check Studio, then resume; Generate has not been clicked.", "COST_UNKNOWN");
+  if (!Number.isFinite(info.cost) || info.cost < 0) throw errorWith("The Generate credit cost is not visible. Check Studio, then resume; Generate has not been clicked.", "COST_UNKNOWN");
   if (info.cost > state.options.maxCredits) throw errorWith(`Studio shows ${info.cost} credits, above your ${state.options.maxCredits}-credit ceiling. Adjust Studio or the ceiling and resume.`, "COST_LIMIT");
   if (Number.isFinite(info.balance) && info.balance < info.cost) throw errorWith(`Tripo shows ${info.balance} credits, below the ${info.cost}-credit generation cost. Add credits, then resume; Generate has not been clicked.`, "INSUFFICIENT_CREDITS");
   if (!info.baseline || !Array.isArray(info.baseline.assetIds)) throw errorWith("Studio’s current model identity could not be recorded. Generate has not been clicked.", "BASELINE_MISSING");
@@ -212,9 +223,9 @@ const generationStep = async () => {
   setStatus("running", `Generating ${state.current.sourceName}`, `${info.cost} Studio credits shown. Waiting for the new model.`);
   let response;
   try {
-    response = await studioMessage("tripo:generate", { jobId: state.current.id, maxCredits: state.options.maxCredits, baseline: state.current.baseline }, 15000);
+    response = await studioMessage("tripo:generate", { jobId: state.current.id, maxCredits: state.options.maxCredits, baseline: state.current.baseline }, 60000);
   } catch (error) {
-    if (error.submitted === false) await saveJob({ status: "uploaded" });
+    if (error.submitted === false) await saveJob({ status: "uploaded", baseline: null });
     throw error;
   }
   await saveJob({ status: "generating", submittedAt: response.submittedAt || Date.now(), generationCost: response.cost ?? info.cost });
@@ -227,7 +238,8 @@ const waitForModel = async () => {
     await studioMessage("tripo:recover", { url: modelURL(state.current.modelUrl) }, 15000);
     await sleep(1500);
   }
-  const deadline = Date.now() + 30 * 60 * 1000;
+  const waitLimit = 30 * 60 * 1000;
+  const deadline = state.current.modelId ? Date.now() + waitLimit : Math.max((state.current.submittedAt || Date.now()) + waitLimit, Date.now() + 20000);
   let failures = 0;
   while (Date.now() < deadline) {
     let info;
@@ -253,7 +265,7 @@ const waitForModel = async () => {
     }
     await sleep(4000);
   }
-  throw errorWith("The generation wait reached 30 minutes. Check Studio and resume the existing job; Generate will not be clicked again.", "GENERATION_TIMEOUT");
+  throw errorWith("No model appeared within 30 minutes of clicking Generate. If Studio shows no model for this image, use “Regenerate” (may charge credits again); otherwise select its model and use “Use selected model”.", "GENERATION_TIMEOUT");
 };
 
 const exportStep = async () => {
@@ -363,12 +375,12 @@ const runLoop = async () => {
   setStatus("idle", "Stopped after the current model", `${state.completed} model${state.completed === 1 ? "" : "s"} saved this run. Start again to continue the root images.`);
 };
 
-const startRun = async () => {
+const startRun = async (control = {}) => {
   if (state.running || state.starting) return;
   state.starting = true;
   updateControls();
   try {
-    await requestFolderPermission();
+    await requestFolderPermission(control.remote === true);
     if (!state.tabId && !hasSavedExport(state.current)) await refreshTabs();
     if (!state.tabId && !hasSavedExport(state.current)) throw errorWith("No Tripo Studio tab was found. Open your signed-in Studio Generate page, click Refresh tabs, then resume. Nothing was uploaded or generated.", "STUDIO_REQUIRED");
     state.options = settings();
@@ -379,6 +391,7 @@ const startRun = async () => {
       state.starting = false;
       state.stop = false;
       state.completed = 0;
+      control.accept?.();
       state.stable.clear();
       updateControls();
       await acquireWakeLock();
@@ -395,6 +408,7 @@ const startRun = async () => {
       }
     });
   } catch (error) {
+    control.reject?.(error);
     setStatus("error", "Could not start the queue", error.message);
   } finally {
     state.starting = false;
@@ -418,7 +432,37 @@ const bindSelectedModel = async () => {
       const info = await ensureStudio();
       if (!info.exportReady || !info.baseline?.modelId) throw errorWith("Select this image’s finished model in Studio and wait until Export is available, then try again.", "MODEL_NOT_READY");
       if (hasSavedExport(latest) && latest.modelId && latest.modelId !== info.baseline.modelId) throw errorWith("This folder already contains files from a saved model. Select that same model before resuming its export.", "MODEL_MISMATCH");
+      const selected = info.baseline.modelId;
+      if (!hasSavedExport(latest) && latest.baseline && (selected === latest.baseline.modelId || (latest.baseline.assetIds || []).includes(selected))) throw errorWith("The selected model already existed before Generate was clicked for this image, so it belongs to another image. Select the model generated from this image, use Regenerate, or import its FBX/ZIP.", "MODEL_PREDATES_JOB");
+      const other = (await listJobs(target.root)).find(job => job.id !== latest.id && job.status === "completed" && job.modelId === selected);
+      if (other) throw errorWith(`The selected model is already saved for ${other.sourceName}. Select the model generated from this image, use Regenerate, or import its FBX/ZIP.`, "MODEL_ALREADY_USED");
       await saveJob({ status: hasSavedExport(latest) ? latest.status : "generating", modelUrl: modelURL(info.url), modelId: info.baseline.modelId, manualBinding: true, baseline: latest.baseline || info.baseline, error: null, errorCode: null });
+    });
+  } finally {
+    state.starting = false;
+    updateControls();
+  }
+  await startRun();
+};
+
+const regenerateJob = async () => {
+  if (state.running || state.starting || !state.current) return;
+  const target = { root: state.root, tabId: state.tabId, jobId: state.current.id };
+  if (!window.confirm("Generate this image again in Studio? Use this only if Studio shows no model for it. Credits may be charged again.")) return;
+  state.starting = true;
+  updateControls();
+  try {
+    await requestFolderPermission();
+    await navigator.locks.request(LOCK_NAME, { ifAvailable: true }, async lock => {
+      if (!lock) throw errorWith("Another GPT Images to Tripo3d tab is already running.", "RUN_ALREADY_ACTIVE");
+      if (state.root !== target.root || state.tabId !== target.tabId || state.current?.id !== target.jobId) throw errorWith("The selected folder or job changed. Try again.", "JOB_CHANGED");
+      const latest = await getJob(target.root, target.jobId);
+      if (!latest || latest.status === "completed") throw errorWith("This job has already completed or changed in another control tab. Rescan the folder.", "JOB_CHANGED");
+      state.current = latest;
+      if (latest.modelId || hasSavedExport(latest)) throw errorWith("This job already has a model or saved export. Use Resume instead.", "JOB_CHANGED");
+      await ensureStudio();
+      await studioMessage("tripo:forget-job", { jobId: latest.id }, 5000);
+      await saveJob({ status: "uploaded", baseline: null, submittedAt: null, modelUrl: null, modelId: null, error: null, errorCode: null });
     });
   } finally {
     state.starting = false;
@@ -495,12 +539,14 @@ event("choose-folder", "click", setupAction(async () => {
 event("grant-folder", "click", setupAction(async () => { await requestFolderPermission(); await refreshQueue(); setStatus("idle", "Folder reconnected", "Start to resume existing work or process root images."); }));
 event("refresh-studio", "click", setupAction(refreshTabs));
 event("studio-select", "change", setupAction(async () => { state.tabId = Number($("studio-select").value) || null; await chrome.storage.local.set({ tabId: state.tabId }); await refreshTabs(); }));
-event("open-studio", "click", setupAction(async () => { const tab = await chrome.tabs.create({ url: "https://studio.tripo3d.ai/workspace/generate" }); state.tabId = tab.id; await refreshTabs(); }));
+const openStudio = async () => { const tab = await chrome.tabs.create({ url: "https://studio.tripo3d.ai/workspace/generate" }); state.tabId = tab.id; await refreshTabs(); };
+event("open-studio", "click", setupAction(openStudio));
 event("start", "click", startRun);
 event("resume", "click", startRun);
 event("stop", "click", () => { state.stop = true; updateControls(); $("status-detail").textContent += " Stop requested; the current model will finish first."; });
 event("rescan", "click", setupAction(refreshQueue));
 event("bind-model", "click", bindSelectedModel);
+event("regenerate", "click", regenerateJob);
 event("import-export", "click", () => { if (!state.current || state.running || state.starting) return; state.importTarget = { root: state.root, jobId: state.current.id }; $("export-file").value = ""; $("export-file").click(); });
 event("export-file", "change", value => importExport(value.target.files[0]));
 for (const id of ["max-credits", "model-limit", "watch-folder"]) event(id, "change", async () => { await chrome.storage.local.set({ options: settings() }); });
@@ -554,5 +600,64 @@ gpt = setupGPT({
   onSaved: async () => { if (!state.running && !state.starting) await refreshQueue().catch(() => {}); }
 });
 
+tripoFilters = setupQueueTabs($("tripo-filters"), renderQueue);
 updateControls();
-initialize().catch(error => { setStatus("error", "Setup needs attention", error.message); }).finally(() => { state.starting = false; updateControls(); });
+let setupError = null;
+const ready = initialize().catch(error => { setupError = error; setStatus("error", "Setup needs attention", error.message); }).finally(() => { state.starting = false; updateControls(); });
+
+const requireIdle = () => { if (state.running || state.starting) throw errorWith("Tripo queue is busy.", "RUN_ALREADY_ACTIVE"); };
+const launch = action => new Promise((resolve, reject) => { action({ remote: true, accept: () => resolve({ accepted: true, asynchronous: true }), reject }).catch(reject); });
+const executeRemote = async (name, args) => {
+  validateTool(name, args);
+  await ready;
+  await gpt.ready;
+  if (setupError && name !== "runner_status") throw setupError;
+  const offset = args.offset || 0;
+  const limit = args.limit || 25;
+  if (name === "runner_status") return {
+    setupError: setupError?.message || null, page: { offset, limit },
+    folder: { name: state.root?.name || null, permission: state.root ? await state.root.queryPermission({ mode: "readwrite" }) : "denied", configured: !!state.root?._remote },
+    gpt: gpt.snapshot(offset, limit, args.requestId), tripo: { running: state.running, starting: state.starting, stopRequested: state.stop, currentJob: state.current, jobs: state.jobs.slice(offset, offset + limit), jobCount: state.jobs.length, images: state.images.slice(offset, offset + limit), imageCount: state.images.length, settings: settings(), tabId: state.tabId, status: $("status-title").textContent, detail: $("status-detail").textContent },
+    tabs: (await chrome.tabs.query({ url: [...STUDIO_PATTERNS, "https://chatgpt.com/*"] })).map(({ id, title, url }) => ({ id, title, url }))
+  };
+  if (name === "runner_open_tab" && args.queue === "gpt") return gpt.openTab();
+  if (name === "runner_open_tab") { requireIdle(); await openStudio(); return { tabId: state.tabId }; }
+  if (name === "runner_add_prompts") return gpt.addPrompts(args.prompts, args.requestId);
+  if (name === "runner_clear_finished") return gpt.clearFinished(args.requestId);
+  if (name === "runner_prompt_action") return gpt.promptAction(args.id, args.action, args.requestId);
+  if (name === "runner_start") {
+    if (args.queue === "gpt") return gpt.startRemote(args.requestId);
+    requireIdle();
+    return launch(startRun);
+  }
+  if (name === "runner_stop") {
+    if (args.queue === "gpt") return gpt.stop(args.requestId);
+    if (!state.running) throw new Error("Tripo queue is not running.");
+    state.stop = true; updateControls(); return { stopRequested: true };
+  }
+  if (name === "runner_select_tab" && args.queue === "gpt") return gpt.selectTab(args.tabId);
+  requireIdle();
+  if (name === "runner_rescan") { await requestFolderPermission(true); await refreshQueue(); return { images: state.images.length, jobs: state.jobs.length }; }
+  if (name === "runner_select_tab") {
+    const tabs = await chrome.tabs.query({ url: STUDIO_PATTERNS });
+    if (!tabs.some(tab => tab.id === args.tabId)) throw new Error("Select an existing Studio tab from runner_status.");
+    state.tabId = args.tabId; await chrome.storage.local.set({ tabId: state.tabId }); await refreshTabs(); return { tabId: state.tabId };
+  }
+  if (name === "runner_settings") {
+    if (args.maxCredits !== undefined) $("max-credits").value = String(args.maxCredits);
+    if (args.limit !== undefined) $("model-limit").value = String(args.limit);
+    if (args.watch !== undefined) $("watch-folder").checked = args.watch;
+    const options = settings(); await chrome.storage.local.set({ options }); return options;
+  }
+  throw new Error("Unsupported command.");
+};
+const mcp = setupMCP({ execute: executeRemote, waitUntilReady: () => Promise.all([ready, gpt.ready]), setFolder: async root => {
+  await ready;
+  if (state.running || state.starting || gpt.busy()) throw new Error("Stop queues before switching to configured output directory.");
+  state.root = root; state.permission = true; state.current = null; state.stable.clear();
+  await refreshQueue(); setupError = null; updateControls();
+  setStatus("idle", state.current ? "A saved job is ready to resume" : "Output folder connected", state.current ? "Start resumes the interrupted job before processing new root images." : "Ready for images. Choose Studio settings before starting models.");
+} });
+ready.then(() => mcp.connect()).catch(() => {});
+
+chrome.runtime.onMessage.addListener(message => { if (message.type === "runner:mcp-discover") mcp.connect(); });

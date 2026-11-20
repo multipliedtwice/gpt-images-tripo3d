@@ -6,7 +6,7 @@ Text prompts → images → Tripo 3D → FBX on your computer.
 
 A Chrome extension that sends image prompts through your signed-in ChatGPT tab, processes reference images through your signed-in Tripo Studio tab, and organizes each FBX export with its reference in the folder you choose.
 
-It runs one image at a time. Images in the selected folder’s root are the queue; subfolders are skipped. You do not need an API key, Node.js, Python, a local server, or a native helper.
+The Tripo model queue runs one image at a time. GPT requests can run concurrently in separate worker tabs. Images in the selected folder’s root are the Tripo queue; subfolders are skipped. Manual browser use needs no API key, Node.js, Python, local server, or native helper. Optional MCP control uses Node.js and a local helper.
 
 ## What is ready, and what still needs a first-run check
 
@@ -42,7 +42,7 @@ In Studio, select the model version and generation options you want. The extensi
 
 1. Click **Choose folder** in the control tab. Select your input folder and grant read/write access. If Chrome later asks for access again, use **Reconnect folder**.
 2. Select your signed-in tab under **Studio tab**. Use **Refresh tabs** if it is missing, or **Open Studio** to open Studio.
-3. Set **Credit ceiling / model**. Its default is **55**, matching the supplied page. The extension checks the displayed Generate cost before clicking and stops if it cannot read the cost or the cost exceeds your ceiling. This is a per-model ceiling, not a total batch budget.
+3. Set **Credit ceiling / model**. Its default is **55**, matching the supplied page. The extension checks the displayed Generate cost before clicking and stops if it cannot read the cost or the cost exceeds your ceiling. Discounted prices use the current charge, including free (0-credit) generations; crossed-out prices are ignored. An unreadable or ambiguous charge pauses the queue. This is a per-model ceiling, not a total batch budget.
 4. Leave **Models this run** at **1** for the first run.
 5. Click **Start batch**. Wait for the model to generate, export, and appear in its output folder. Check the FBX in your usual model viewer or game pipeline.
 6. For a larger batch, choose a model count or set **Models this run = 0** for no count limit, then start again.
@@ -95,9 +95,105 @@ The **GPT images** tab sends pasted prompts to ChatGPT in a signed-in browser ta
 
 Each prompt runs in a new chat in the selected tab. The first image of the reply is saved as `<prompt start>.png` (or `.jpg`/`.webp`, depending on what ChatGPT returns). Existing names get a `--2` suffix. The queue is stored in the extension and survives closing the control tab.
 
-A prompt is recorded as sent before the send button is clicked. After an interruption, **Start prompts** reopens the recorded chat and checks it for the image; it does not send the prompt again. **Send again** in a row is the only action that resends a prompt. A reply without an image marks that prompt failed and the queue continues. A usage-limit message, a signed-out tab or a 10-minute wait without an image pauses the queue.
+A prompt is recorded as sent before the send button is clicked. After an interruption, **Start prompts** reopens the recorded chat and checks it for the image; it does not send the prompt again. **Send again** in a row is the only action that resends a prompt. A reply without an image marks that prompt failed and the queue continues. A usage-limit message, a signed-out tab or a 12-minute wait without an image pauses the queue. Temporary status-check failures get up to five attempts, with 2, 4, 8 and 16-second backoff delays inside the same 12-minute deadline. A successful check resets that retry budget. Retries only check the existing chat; they never resend the prompt. Image-free completion requires an explicit completed response, no pending image, and 60 seconds of stability. Unknown completion keeps waiting. Limits and interruptions preserve the submitted prompt so Start checks its recorded chat.
 
 The ChatGPT page markup is not a stable API. If ChatGPT changes its layout, prompts may fail to send or images may not be detected; the queue pauses instead of resending.
+
+## Queue status tabs
+
+Both queues: **All**, **Waiting**, **Active**, **Needs attention**, **Completed** (GPT: **Saved**). Counts cover all records. Folder queue displays latest 80 completed models; earlier output stays on disk. Arrow keys, Home, End switch status tabs. Filters change display only.
+
+## Local MCP control
+
+Optional. Node.js 20+. Local MCP client with stdio support: Claude, Codex, or another compatible client. No package install required. Supports initialize-based MCP versions `2025-06-18`, `2025-03-26`, `2024-11-05`.
+
+One-time setup:
+
+1. Install from Chrome Web Store or load unpacked. Open MCP dropdown → One-time setup. Download the matching bundled helper and extract into a permanent `mcp-helper` folder. Node.js 20+ required; no Python or package install needed. Keep extracted files together.
+2. Create output directory. Use absolute path; symlink directory rejected.
+3. Copy **Claude config** (JSON) or **Codex config** (TOML) from dropdown. Actual extension ID included. Set helper path to extracted `mcp-helper/mcp/server.js` and set output path, then add template to client. Claude example:
+
+```json
+{
+  "mcpServers": {
+    "folder-runner": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-helper/mcp/server.js"],
+      "env": {
+        "RUNNER_EXTENSION_ID": "your_32_character_extension_id",
+        "RUNNER_OUTPUT_DIR": "/absolute/path/to/output"
+      }
+    }
+  }
+}
+```
+
+Codex example:
+
+```toml
+[mcp_servers.image-runner]
+command = "node"
+args = ["/absolute/path/to/mcp-helper/mcp/server.js"]
+
+[mcp_servers.image-runner.env]
+RUNNER_EXTENSION_ID = "your_extension_id"
+RUNNER_OUTPUT_DIR = "/absolute/path/to/output"
+```
+
+Use absolute Node executable path if client cannot find `node`. Existing output directory required. Node helper reads/writes only that directory; subdirectory symlinks rejected. Existing manual folder picker remains available when no configured directory supplied.
+
+Keep **Allow agent control** enabled in MCP dropdown. It remembers your choice. Off disconnects agent control; current image/model work continues. Status shows **Waiting for local helper**, **Local helper connected**, or **Agent control off**. Helper connection does not prove an active model session.
+
+Use one control dashboard. Additional control tabs cannot write GPT state or claim helper session; they show **Agent control unavailable**. Request worker tabs stay separate from control dashboard.
+
+Keep Chrome running with extension enabled. Background discovery checks helper on default port `17321` every 30 seconds. It opens control tab automatically; existing control tab connects automatically. No folder picker, token copy, or queue button required. Initial Chrome installation, extension reload after updates, and service sign-in still need browser access. Keep control tab open during runs.
+
+GPT-only workflow needs no Tripo tab: ask agent to open ChatGPT with `runner_open_tab`, add prompts, then start GPT queue. Generated images save directly to `RUNNER_OUTPUT_DIR`. For models, open Studio, configure generation options there, then start Tripo queue. Studio generation can spend credits; configured ceiling still applies.
+
+Multiple agents/chats use same MCP configuration. One shared helper routes each client's replies; one dashboard coordinates workers. Extension ID, output directory and explicit token settings must match. Closing one client leaves other clients and connected dashboard available. Accepted work may continue after client disconnect or timeout. Each GPT request uses its own browser tab. Different requests generate concurrently; prompts within one request run serially, each in its own ChatGPT conversation.
+
+For separate requests, generate a unique `requestId` per batch. Keep it unchanged across retries:
+
+```json
+{"name":"runner_add_prompts","arguments":{"requestId":"agent-a-chat-42-batch-1","prompts":["Generate an image of a sparrow"]}}
+```
+
+Start the batch with `runner_start` using `queue: "gpt"` and the same `requestId`, then call `runner_status` with that ID. GPT results include matching prompt records, saved filenames and conversation links. Stop only that batch with `runner_stop` using `queue: "gpt"` and its `requestId`. Same request ID plus exact original prompts returns original IDs; changed prompts reject. Receipts survive clearing/removing records. Request IDs label work; they do not authenticate agents. Output folder, Tripo queue and Studio settings stay shared. Coordinate global controls between agents.
+
+Dashboard **Start prompts** starts all ready batches. Dashboard Stop stops all GPT workers after current images. MCP start without `requestId` starts only manual/unscoped prompts. Resuming a request reopens its recorded chat; a closed worker tab gets a replacement tab.
+
+Tools:
+
+| Tool | Action |
+|---|---|
+| `runner_status` | Queue state, folder, settings, available tabs. Optional `requestId` filters GPT before pagination; Tripo stays shared. `offset` and `limit` default 0/25, max limit 50. |
+| `runner_open_tab` / `runner_select_tab` | Open fixed ChatGPT/Studio URL or select existing tab. |
+| `runner_add_prompts` | Append exact prompt strings. Optional stable `requestId` prevents duplicate enqueue. No send until start. |
+| `runner_start` | Start/resume GPT batch with `requestId`, or legacy GPT/Tripo queue without it. GPT already running reports existing run; inspect stopping state and status. Startup acceptance is not completion. |
+| `runner_stop` | With GPT `requestId`, stop that batch after current image. Without it, stop shared queue workers after current work. |
+| `runner_rescan` / `runner_settings` | Rescan idle folder; set credit ceiling, model limit, watch. |
+| `runner_clear_finished` | Clear saved/failed GPT records; optional `requestId` scopes records. Omitted means all requests. Files and request receipts kept. |
+| `runner_prompt_action` | Explicit retry/remove by prompt ID. Optional `requestId` checks matching request. Retry permits another send. |
+
+Interrupted work keeps existing recovery rules. No automatic resend or regeneration. Model binding, manual FBX import, and explicit Tripo regeneration remain browser recovery actions. Timed-out commands are never replayed; inspect status before retry. Only request-keyed enqueue safely deduplicates a deliberate retry. Queue data remains in extension storage and output directory.
+
+Helper binds `127.0.0.1`; stdio clients use private local IPC. Bootstrap accepts only configured extension identity; browser web origins rejected. Per-broker token authenticates extension requests. Optional `RUNNER_MCP_TOKEN` sets token (minimum 32 characters); default generated automatically. Browser discovery uses default port `17321`; leave helper port unchanged. Tokens are exchanged automatically; no token entry or Connect button. Broker stops after clients and dashboard disconnect. No telemetry. Local filesystem writes stream to temporary files; successful close atomically replaces destination; abort preserves prior bytes.
+
+Run automated suite:
+
+```sh
+taskpolicy -b nice -n 19 env NODE_OPTIONS=--max-old-space-size=2048 UV_THREADPOOL_SIZE=1 RAYON_NUM_THREADS=1 npm test
+```
+
+macOS command shown. Other hosts: supported lowest-priority equivalent. Check CPU, memory, disk, competing builds before tests. Suite uses controlled local HTTP/filesystem fixtures; no live ChatGPT prompt or Tripo generation.
+
+## Release packaging
+
+Developer build only: run `npm run package` (Python 3.9+), or `python3 scripts/package-release.py`. Manifest, package, dashboard version label, and helper download filename must match. Script creates `assets/mcp-helper.zip`, `store/gpt-images-tripo3d-{version}.zip`, and `store/gpt-images-tripo3d-mcp-{version}.zip`. Extension archive includes matching helper download; companion helper archive contains identical bytes. Prior version archives remain unchanged. Current version outputs are replaced atomically.
+
+Use `--output-dir /absolute/path/to/release-check` for isolated outputs under that folder’s `assets/` and `store/`. Archives use explicit runtime allowlists and fixed entry metadata. Helper needs only Node.js 20+ at runtime.
+
+After updating extension, download matching helper. Finish active queue work first. Then stop MCP clients and disconnect agent control before replacing extracted helper files; restart clients and enable agent control afterward.
 
 ## Limits
 
@@ -108,13 +204,14 @@ The ChatGPT page markup is not a stable API. If ChatGPT changes its layout, prom
 | Total unpacked ZIP content | 1 GiB |
 | One unpacked ZIP entry | 768 MiB |
 | Entries in a ZIP | 2,048 |
-| Concurrent generation jobs | 1 |
+| Concurrent Tripo generation jobs | 1 |
+| Concurrent GPT generation jobs | 1 per active request; separate requests run in parallel |
 
 Exports must contain a recognizable FBX. ZIP validation includes archive paths, entry sizes, and integrity checks. Unsupported or oversized exports pause the job with the input image retained. Large exports need corresponding free space on the selected drive because the original package is staged before the output files are committed.
 
 ## Permissions and data
 
-The manifest requests HTTPS host access (`https://*/*`) so the control tab can fetch a signed export URL even when Tripo serves it from a separate CDN. The automation scripts are declared only for the Tripo Studio/workspace addresses and `https://chatgpt.com/*` in `manifest.json`. The extension does not inject its scripts into other sites.
+The manifest also permits `http://127.0.0.1/*` for optional local MCP and uses an alarm to discover its helper. HTTPS host access (`https://*/*`) so the control tab can fetch a signed export URL even when Tripo serves it from a separate CDN. The automation scripts are declared only for the Tripo Studio/workspace addresses and `https://chatgpt.com/*` in `manifest.json`. The extension does not inject its scripts into other sites.
 
 The folder picker grants access to the folder you select. The extension reads reference images, writes model folders and recovery records, and removes a root image only after its copy and export have been verified. It uses your existing Studio session and the normal Studio upload/generation/export interface. There is no telemetry or separate analytics service in this extension.
 

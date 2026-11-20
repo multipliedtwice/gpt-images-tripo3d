@@ -13,11 +13,38 @@
     <header class="header">
       <div class="brand">
         <img class="brand-mark" src="assets/icon.svg" alt="">
-        <h1>GPT Images to Tripo3d</h1>
+        <div class="brand-title"><h1>GPT Images to Tripo3d</h1><span class="version">v0.2.5</span></div>
       </div>
-      <span class="version">v0.2.3 · local extension</span>
+      <details class="mcp-settings">
+        <summary aria-label="MCP controls" title="MCP controls">
+          <svg class="mcp-logo" width="24" height="24" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <metadata>Model Context Protocol logo. Source: https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/docs/favicon.svg
+MIT License
+Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</metadata>
+            <rect width="180" height="180" rx="24" fill="black"/>
+            <path d="M23.5996 85.2532L86.2021 22.6507C94.8457 14.0071 108.86 14.0071 117.503 22.6507C126.147 31.2942 126.147 45.3083 117.503 53.9519L70.2254 101.23" stroke="white" stroke-width="11.0667" stroke-linecap="round"/>
+            <path d="M70.8789 100.578L117.504 53.952C126.148 45.3083 140.163 45.3083 148.806 53.952L149.132 54.278C157.776 62.9216 157.776 76.9357 149.132 85.5792L92.5139 142.198C89.6327 145.079 89.6327 149.75 92.5139 152.631L104.14 164.257" stroke="white" stroke-width="11.0667" stroke-linecap="round"/>
+            <path d="M101.853 38.3013L55.553 84.6011C46.9094 93.2447 46.9094 107.258 55.553 115.902C64.1966 124.546 78.2106 124.546 86.8543 115.902L133.154 69.6025" stroke="white" stroke-width="11.0667" stroke-linecap="round"/>
+          </svg>
+          <svg class="mcp-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </summary>
+        <div class="mcp-panel">
+          <h2>MCP</h2>
+          <label class="checkbox mcp-toggle"><input id="mcp-enabled" type="checkbox" checked><span>Allow agent control</span></label>
+          <p id="mcp-status" class="hint" role="status">Waiting for local helper</p>
+          <details class="mcp-setup">
+            <summary>One-time setup</summary>
+            <p class="hint">Extract the bundled helper once. Requires Node.js 20+.</p>
+            <div class="button-row"><a class="button secondary" href="assets/mcp-helper.zip" download="gpt-images-tripo3d-mcp-0.2.5.zip">Save bundled helper</a><button id="mcp-copy-claude" aria-label="Copy Claude config template" class="button secondary" type="button">Copy Claude config</button><button id="mcp-copy-codex" aria-label="Copy Codex config template" class="button secondary" type="button">Copy Codex config</button></div>
+            <p class="hint">Set helper and output paths in the config once. Your agent starts the helper automatically.</p>
+            <textarea id="mcp-config" aria-label="MCP config template" rows="8" readonly hidden></textarea>
+          </details>
+        </div>
+      </details>
     </header>
-    <p class="intro">Text prompts → images → Tripo 3D → FBX on your computer</p>
     <nav class="tabs" role="tablist">
       <button id="tab-gpt" class="tab" role="tab" aria-selected="true" aria-controls="view-gpt">GPT images</button>
       <button id="tab-tripo" class="tab" role="tab" aria-selected="false" aria-controls="view-tripo" tabindex="-1">Tripo models</button>
@@ -55,6 +82,7 @@
         </section>
         <section class="card queue-card">
           <div class="queue-heading"><div><h2>Prompt queue</h2><p class="hint">One prompt at a time. A sent prompt is never sent again unless you choose Send again.</p></div><button id="gpt-clear" class="button quiet">Clear finished</button></div>
+          <div id="gpt-filters" class="queue-tabs"></div>
           <div class="table-wrap"><table><thead><tr><th>Prompt</th><th>Progress</th><th>Image file</th></tr></thead><tbody id="gpt-body"></tbody></table></div>
           <div id="gpt-empty" class="empty-state"><span class="empty-symbol">＋</span><h3>Your prompts will appear here</h3><p>Paste prompts and click Add to queue.</p></div>
         </section>
@@ -97,11 +125,12 @@
           <div class="eyebrow">Resume existing work</div>
           <h3 id="recovery-title">A job is waiting</h3>
           <p id="recovery-detail">Resume reconnects to the saved generation. If needed, select this image’s model in Studio or import its downloaded FBX/ZIP.</p>
-          <div class="button-row"><button id="resume" class="button secondary">Resume job</button><button id="bind-model" class="button secondary">Use selected model</button><button id="import-export" class="button quiet">Use downloaded FBX/ZIP</button></div>
+          <div class="button-row"><button id="resume" class="button secondary">Resume job</button><button id="bind-model" class="button secondary">Use selected model</button><button id="regenerate" class="button secondary">Regenerate</button><button id="import-export" class="button quiet">Use downloaded FBX/ZIP</button></div>
           <input id="export-file" type="file" accept=".fbx,.zip" hidden>
         </section>
         <section class="card queue-card">
           <div class="queue-heading"><div><h2>Folder queue</h2><p class="hint">One image at a time. Completed folders are never reprocessed.</p></div><button id="rescan" class="button quiet">Rescan</button></div>
+          <div id="tripo-filters" class="queue-tabs"></div>
           <div class="table-wrap"><table><thead><tr><th>Reference image</th><th>Progress</th><th>Output folder</th></tr></thead><tbody id="queue-body"></tbody></table></div>
           <div id="empty-state" class="empty-state"><span class="empty-symbol">＋</span><h3>Your images will appear here</h3><p>Add reference images to the selected folder’s root.</p></div>
           <p id="queue-note" class="hint queue-note" hidden></p>

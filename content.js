@@ -12,6 +12,9 @@
   const MODEL_ACCEPT = /^(?:\.(?:fbx|obj|stl|glb|gltf|usdz|3mf|ply|dae)|model\/.+)$/i;
   const PREPARE_TIMEOUT = 8000;
   const CONFIRM_TIMEOUT = 45000;
+  const START_TIMEOUT = 30000;
+  const GENERATE_SETTLE = 1500;
+  const GENERATE_READY_TIMEOUT = 10000;
   const submittedJobs = new Set();
   const allowedHosts = new Set(['studio.tripo3d.ai', 'www.tripo3d.ai', 'tripo3d.ai']);
   let uploaded = null;
@@ -33,7 +36,17 @@
   const all = (selector, scope = document) => Array.from(scope.querySelectorAll(selector));
   const visibleAll = (selector, scope = document) => all(selector, scope).filter(visible);
   const unique = values => [...new Set(values.filter(Boolean))];
-  const generateButton = () => visibleAll('button,[role="button"]').find(element => /^Generate(?:\s+[\d,.]+)?$/i.test(text(element))) || null;
+  const blockingDialog = () => visibleAll('[role="alertdialog"],[aria-modal="true"],[role="dialog"]').find(element => !element.closest('[data-reka-popper-content-wrapper],[data-radix-popper-content-wrapper]')) || null;
+  const buttonText = (element, omitOldPrice = false) => {
+    if (!element || !visible(element)) return '';
+    const style = getComputedStyle(element);
+    if (omitOldPrice && (['S', 'STRIKE', 'DEL'].includes(element.tagName) || element.classList.contains('line-through') || /line-through/.test(style.textDecorationLine || style.textDecoration || ''))) return '';
+    return Array.from(element.childNodes).map(node => node.nodeType === 3 ? node.textContent : node.nodeType === 1 ? buttonText(node, omitOldPrice) : '').join(' ').replace(/\s+/g, ' ').trim();
+  };
+  const generateButton = () => {
+    const candidates = visibleAll('button,[role="button"]').filter(element => /^Generate(?:\s+[-+\d,.]+)*$/i.test(buttonText(element)));
+    return candidates.length === 1 ? candidates[0] : null;
+  };
   const exportButton = () => visibleAll(EXPORT_SELECTOR).find(enabled) || visibleAll('button').find(element => /^Export$/i.test(text(element)) && !element.closest('[role="dialog"],[data-reka-popper-content-wrapper],[data-radix-popper-content-wrapper]')) || null;
   const acceptTokens = input => (input.getAttribute('accept') || '').split(',').map(token => token.trim()).filter(Boolean);
   const isImageInput = input => {
@@ -132,10 +145,10 @@
   const assets = () => all('a[href*="/workspace/generate/"]').map(anchor => ({ id: idFromURL(anchor.href), url: anchor.href, anchor })).filter(asset => asset.id);
   const baselineNow = () => ({ url: location.href, modelId: idFromURL(location.href), assetIds: unique(assets().map(asset => asset.id)), at: Date.now() });
   const currentCost = () => {
-    const match = text(generateButton()).match(/^Generate\s+([\d,.]+)$/i);
+    const match = buttonText(generateButton(), true).match(/^Generate\s+(0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)$/i);
     if (!match) return null;
     const value = Number(match[1].replace(/,/g, ''));
-    return Number.isFinite(value) ? value : null;
+    return Number.isSafeInteger(value) ? value : null;
   };
   const parseCredits = value => {
     const match = /^([\d,.]+)\s*(k)?$/i.exec(String(value || '').trim());
@@ -230,6 +243,20 @@
     if (typeof message.jobId !== 'string' || !message.jobId) throw fail('This generation is missing its queue job ID.', 'INVALID_JOB');
     if (submittedJobs.has(message.jobId)) throw fail('Generate was already clicked for this item. Wait for its model or resume the existing result.', 'ALREADY_SUBMITTED');
     if (!uploaded) throw fail('Upload and confirm this source image before generating.', 'IMAGE_NOT_CONFIRMED');
+    let readySince = null;
+    try {
+      await waitFor(() => {
+        if (!enabled(generateButton()) || busyMessage() || blockingDialog()) {
+          readySince = null;
+          return false;
+        }
+        readySince = readySince ?? Date.now();
+        return Date.now() - readySince >= GENERATE_SETTLE;
+      }, GENERATE_READY_TIMEOUT, fail('The Generate button is not ready. Check Studio for a dialog or an unfinished operation.', 'GENERATE_NOT_READY'));
+    } catch (error) {
+      if (blockingDialog()) throw fail('A Studio dialog is open (for example an upgrade or paywall prompt). Close it, then Resume; Generate has not been clicked.', 'STUDIO_DIALOG_OPEN');
+      throw error;
+    }
     const panel = sourcePanel(uploaded.panel);
     const currentSources = new Set(previewSources(panel));
     const selectedFile = imageInput()?.files?.[0];
@@ -245,13 +272,39 @@
     if (balance !== null && balance < cost) throw fail(`Tripo shows ${balance} credits, below the ${cost}-credit generation cost. Add credits, then resume; Generate has not been clicked.`, 'INSUFFICIENT_CREDITS');
     const baseline = message.baseline && Array.isArray(message.baseline.assetIds) ? message.baseline : baselineNow();
     if (idFromURL(location.href) !== (baseline.modelId || null)) throw fail('The selected Studio model changed after the queue prepared this generation. Resume to inspect it again.', 'BASELINE_CHANGED');
+    const knownIds = new Set([baseline.modelId, ...baseline.assetIds].filter(Boolean));
     submittedJobs.add(message.jobId);
     recoveringModel = null;
     readyCandidate = null;
     lastReady = null;
     uploaded = null;
+    const submittedAt = Date.now();
     button.click();
-    return { ok: true, baseline, cost, submitted: true, submittedAt: Date.now() };
+    const startedEvidence = () => {
+      const failure = failureMessage();
+      if (failure) throw fail(failure, 'GENERATION_FAILED');
+      const urlId = idFromURL(location.href);
+      const nowBalance = currentBalance();
+      const current = generateButton();
+      return !!busyMessage()
+        || assets().some(asset => !knownIds.has(asset.id))
+        || (urlId !== null && urlId !== (baseline.modelId || null) && !knownIds.has(urlId))
+        || (balance !== null && nowBalance !== null && nowBalance < balance)
+        || (!blockingDialog() && (!current || !enabled(current)));
+    };
+    while (Date.now() - submittedAt < START_TIMEOUT) {
+      await sleep(300);
+      if (startedEvidence()) return { ok: true, baseline, cost, submitted: true, started: true, submittedAt };
+    }
+    submittedJobs.delete(message.jobId);
+    if (blockingDialog()) throw fail('A Studio dialog opened after Generate was clicked (for example an upgrade or paywall prompt) and no generation started. Close the dialog, then Resume to upload and generate again.', 'GENERATE_BLOCKED_BY_DIALOG');
+    throw fail('Studio did not start a generation after Generate was clicked (no progress, new model or credit change within 30 s). The job was returned to the upload step; Resume uploads the image and clicks Generate again.', 'GENERATE_NOT_STARTED');
+  };
+
+  const forgetJob = message => {
+    submittedJobs.delete(message.jobId);
+    uploaded = null;
+    return { ok: true };
   };
 
   const status = async message => {
@@ -464,6 +517,7 @@
     'tripo:inspect': inspect,
     'tripo:upload': upload,
     'tripo:generate': generate,
+    'tripo:forget-job': forgetJob,
     'tripo:status': status,
     'tripo:export': exportModel,
     'tripo:recover': recover,

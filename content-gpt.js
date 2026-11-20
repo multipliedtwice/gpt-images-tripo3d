@@ -114,7 +114,10 @@
     if (loggedOut()) return { ok: true, state: 'failed', code: 'GPT_SIGNED_OUT', detail: 'ChatGPT is signed out in the selected tab.' };
     const images = generatedImages();
     const working = busy();
-    const key = `${working}|${all(USER_TURN).length}|${images.join('|')}|${lastResponseText().length}`;
+    const responses = all(RESPONSE);
+    const pendingImage = all(IMAGE).some(image => !image.closest('[role="dialog"],dialog') && (!image.complete || image.naturalWidth < 256 || image.naturalHeight < 256));
+    const completion = turnState();
+    const key = `${working}|${completion}|${all(USER_TURN).length}|${images.join('|')}|${pendingImage}|${responses.length}|${text(responses.at(-1))}`;
     if (key !== observed.key) observed = { key, at: Date.now() };
     const settled = Date.now() - observed.at;
     const conversationUrl = conversationURL();
@@ -122,7 +125,7 @@
     if (!working && !images.length) {
       const limit = limitMessage();
       if (limit) return { ok: true, state: 'failed', code: 'GPT_LIMIT', detail: limit, conversationUrl };
-      if (all(RESPONSE).length && settled >= 20000) return { ok: true, state: 'failed', code: 'GPT_NO_IMAGE', detail: lastResponseText() || 'ChatGPT finished without an image.', conversationUrl };
+      if (completion === 'complete' && responses.length && !pendingImage && settled >= 60000) return { ok: true, state: 'failed', code: 'GPT_NO_IMAGE', detail: lastResponseText() || 'ChatGPT finished without an image.', conversationUrl };
     }
     return { ok: true, state: 'waiting', conversationUrl, detail: working ? 'ChatGPT is generating the image.' : 'Waiting for the generated image to settle.' };
   };
