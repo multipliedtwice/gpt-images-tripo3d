@@ -1,0 +1,13 @@
+{
+  "brand": "GPT Images to Tripo3d",
+  "palette": {"navy": "#102447", "cobalt": "#2456c7", "surface": "#f5f7fb", "capture": "#ffffff"},
+  "type": "System sans-serif, large concise headlines",
+  "illustration": {"path": "illustration.png", "description": "Conceptual still life of a wooden shipping crate reference and a corresponding 3D object against navy; warm wood and clean directional light.", "role": "Conceptual workflow illustration, not generated extension output"},
+  "assets": [
+    {"query": "overview", "output": "production-01-workflow.png", "width": 1280, "height": 800},
+    {"query": "prompts", "output": "production-02-prompts.png", "width": 1280, "height": 800},
+    {"query": "models", "output": "production-03-models.png", "width": 1280, "height": 800},
+    {"query": "small", "output": "production-small-440x280.png", "width": 440, "height": 280},
+    {"query": "marquee", "output": "production-marquee-1400x560.png", "width": 1400, "height": 560}
+  ]
+}
