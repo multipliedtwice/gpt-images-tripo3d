@@ -32,7 +32,16 @@
     return null;
   };
 
-  const conversationURL = () => /\/c\/[\w-]+/.test(location.pathname) ? location.origin + location.pathname : null;
+  const conversationURL = () => {
+    if (location.origin !== 'https://chatgpt.com') return null;
+    const match = /^\/c\/([^/]+)\/?$/.exec(location.pathname);
+    if (!match) return null;
+    try {
+      const id = decodeURIComponent(match[1]);
+      if (!id || id.includes('/') || id.toLowerCase().startsWith('local-chatgpt:')) return null;
+      return location.origin + location.pathname;
+    } catch { return null; }
+  };
   const loggedOut = () => !!document.querySelector('button[aria-label$="Log in to use." i]');
   const turnState = () => all(TURN_STATE).at(-1)?.getAttribute('data-talvt-turn-state') || null;
   const busy = () => !!firstVisible(STOP) || (all(USER_TURN).length > 0 && turnState() !== null && turnState() !== 'complete');
@@ -40,7 +49,16 @@
   const limitMessage = () => [lastResponseText(), ...all('[role="alert"],[role="status"]').map(text)].find(value => value && value.length < 600 && LIMIT.test(value)) || null;
   const generatedImages = () => [...new Set(all(IMAGE).filter(image => !image.closest('[role="dialog"],dialog') && image.complete && image.naturalWidth >= 256 && image.naturalHeight >= 256).map(image => image.currentSrc || image.src))];
 
-  const inspect = () => ({ ok: true, url: location.href, conversationUrl: conversationURL(), composer: !!firstVisible(COMPOSER), loggedOut: loggedOut(), busy: busy(), turns: all(USER_TURN).length, limit: limitMessage() });
+  const userPrompt = turn => {
+    const passage = turn?.querySelector?.('[data-thread-reading-passage]') || turn?.querySelector?.('.whitespace-pre-wrap');
+    return text(passage || turn);
+  };
+  const visibleTurns = () => {
+    const turns = all(USER_TURN).filter(visible);
+    const bubbles = turns.filter(turn => turn.matches?.('[data-user-message-bubble="true"]'));
+    return bubbles.length ? bubbles : turns;
+  };
+  const inspect = () => ({ ok: true, url: location.href, conversationUrl: conversationURL(), composer: !!firstVisible(COMPOSER), loggedOut: loggedOut(), busy: busy(), turns: all(USER_TURN).length, userPromptCount: visibleTurns().length, lastUserPrompt: userPrompt(visibleTurns().at(-1)), limit: limitMessage() });
 
   const squash = value => value.replace(/\s+/g, ' ').trim();
   const matches = (box, value) => squash(box instanceof HTMLTextAreaElement ? box.value : box.innerText) === squash(value);
@@ -91,20 +109,16 @@
     const box = await poll(() => firstVisible(COMPOSER), 8000);
     if (!box) throw fail('The ChatGPT message box was not found. Nothing was sent.', 'GPT_COMPOSER_NOT_FOUND');
     if (!await fill(box, message.prompt)) throw fail('The prompt could not be typed into ChatGPT exactly. Nothing was sent.', 'GPT_FILL_FAILED');
-    const turns = all(USER_TURN).length;
-    const sent = () => !!conversationURL() || all(USER_TURN).length > turns || !squash(box.isConnected ? (box instanceof HTMLTextAreaElement ? box.value : box.innerText) : '');
+    const turns = new Set(all(USER_TURN));
+    const newTurns = () => all(USER_TURN).filter(turn => !turns.has(turn));
+    const sent = () => newTurns().some(turn => visible(turn) && userPrompt(turn) === squash(message.prompt));
     submittedJobs.add(message.jobId);
     observed = { key: null, at: 0 };
     const button = await poll(() => sendButton(box), 15000);
     if (button) button.click();
     else pressEnter(box);
     if (!await poll(sent, button ? 8000 : 5000)) {
-      if (button && matches(box, message.prompt)) pressEnter(box);
-      if (!await poll(sent, 8000)) {
-        const untouched = box.isConnected && matches(box, message.prompt) && !conversationURL() && all(USER_TURN).length === turns;
-        if (untouched) submittedJobs.delete(message.jobId);
-        throw fail(untouched ? 'ChatGPT did not accept the prompt. The text is still in its message box, so nothing was sent.' : 'The prompt may have been sent, but ChatGPT did not confirm it. Check the ChatGPT tab before sending again.', untouched ? 'GPT_SEND_FAILED' : 'GPT_SEND_UNCONFIRMED', { submitted: !untouched });
-      }
+      throw fail('The prompt may have been sent, but ChatGPT did not confirm it. Check the ChatGPT tab before sending again.', 'GPT_SEND_UNCONFIRMED', { submitted: true });
     }
     const url = await poll(() => conversationURL(), 20000);
     return { ok: true, submitted: true, conversationUrl: url };

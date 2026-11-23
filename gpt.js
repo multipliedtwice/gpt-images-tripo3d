@@ -19,6 +19,15 @@ export const parsePrompts = value => String(value).replace(/\r\n?/g, "\n").split
 
 const transientStatusError = error => ["GPT_TIMEOUT", "GPT_ERROR"].includes(error?.code) || isMissingReceiver(error) || /message (?:port|channel) closed|asynchronous response.*(?:closed|before)/i.test(error?.message || "");
 const conversationIdentity = value => { const url = new URL(value); return `${url.origin}${url.pathname.replace(/\/+$/, "")}`; };
+const durableConversation = value => {
+  try {
+    const url = new URL(value);
+    const match = /^\/c\/([^/]+)\/?$/.exec(url.pathname);
+    if (url.origin !== "https://chatgpt.com" || !match) return false;
+    const id = decodeURIComponent(match[1]);
+    return !!id && !id.includes("/") && !id.toLowerCase().startsWith("local-chatgpt:");
+  } catch { return false; }
+};
 
 export const waitForGPTReady = async ({ url, readTab, inspect, now = Date.now, pause = sleep }) => {
   const deadline = now() + 45000;
@@ -253,6 +262,8 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
       }
       const actions = document.createElement("div");
       actions.className = "row-actions";
+      if (item.status === "pending" || IN_FLIGHT.includes(item.status)) actions.append(actionButton(item.status === "pending" ? "Run once" : "Resume once", () => startOne(item.id, item.requestId)));
+      if (item.status === "submitted" && (item.error || !durableConversation(item.conversationUrl))) actions.append(actionButton("Use selected chat", () => useSelectedChat(item.id, item.requestId)));
       if (item.status === "failed" || item.error) actions.append(actionButton(item.status === "pending" ? "Clear error" : "Send again", () => patch(item, { status: "pending", error: null, code: null, conversationUrl: null, fileName: null }, true)));
       if (item.status !== "saving" && item.status !== "saved") actions.append(actionButton("Remove", () => removeItem(item)));
       if (item.conversationUrl) {
@@ -341,6 +352,13 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
 
   const reopen = async (item, worker) => {
     if (!item.conversationUrl) throw errorWith("This prompt was sent, but its chat link was not recorded. Open ChatGPT to check it, then use Send again or Remove.", "GPT_CONVERSATION_MISSING");
+    try {
+      const url = new URL(item.conversationUrl);
+      const match = /^\/c\/([^/]+)\/?$/.exec(url.pathname);
+      if (url.origin === "https://chatgpt.com" && match && decodeURIComponent(match[1]).toLowerCase().startsWith("local-chatgpt:")) throw errorWith("This saved link is a ChatGPT draft and cannot be resumed. Inspect the chat, then use Send again if needed.", "GPT_CONVERSATION_UNAVAILABLE");
+    } catch (error) {
+      if (error.code === "GPT_CONVERSATION_UNAVAILABLE") throw error;
+    }
     setStatus("running", "Reopening the existing chat", "The prompt is not sent again.", worker);
     await navigate(item.conversationUrl, worker);
   };
@@ -370,8 +388,8 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
 
   const nextItem = worker => state.items.find(item => sameRequest(item, worker) && IN_FLIGHT.includes(item.status)) || state.items.find(item => sameRequest(item, worker) && item.status === "pending");
 
-  const runLoop = async worker => {
-    for (let item = nextItem(worker); item && !worker.stop; item = nextItem(worker)) {
+  const runLoop = async (worker, selectedItem = null) => {
+    for (let item = selectedItem || nextItem(worker); item && !worker.stop; item = selectedItem ? null : nextItem(worker)) {
       try {
         await processItem(item, worker);
       } catch (error) {
@@ -382,9 +400,9 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
         await patch(item, { error: error.message, code: error.code || "GPT_ERROR" });
         throw error;
       }
-      if (nextItem(worker)) await sleep(2000);
+      if (!selectedItem && nextItem(worker)) await sleep(2000);
     }
-    setStatus("idle", worker.stop ? "Stopped after the current image" : "Prompt queue complete", `${worker.saved} image${worker.saved === 1 ? "" : "s"} saved this run.`, worker);
+    setStatus("idle", worker.stop ? "Stopped after the current image" : selectedItem ? "Single prompt complete" : "Prompt queue complete", `${worker.saved} image${worker.saved === 1 ? "" : "s"} saved this run.`, worker);
   };
 
   const prepareWorkerTab = async worker => {
@@ -421,7 +439,9 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
       await controllerReady;
       await loaded;
       await mutations;
-      if (!nextItem(worker)) throw new Error("No GPT prompts are ready to run in this request.");
+      const selectedItem = control.itemId === undefined ? null : state.items.find(item => item.id === control.itemId && sameRequest(item, worker) && (item.status === "pending" || IN_FLIGHT.includes(item.status)));
+      if (control.itemId !== undefined && !selectedItem) throw new Error("Runnable prompt not found in this request.");
+      if (!selectedItem && !nextItem(worker)) throw new Error("No GPT prompts are ready to run in this request.");
       if (!getRoot()) throw errorWith("Choose a folder in the Tripo models tab first.", "FOLDER_REQUIRED");
       await ensurePermission(control.remote === true);
       await prepareWorkerTab(worker);
@@ -433,7 +453,7 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
           Object.assign(worker, { running: true, starting: false, saved: 0 });
           control.accept?.();
           render();
-          try { await runLoop(worker); }
+          try { await runLoop(worker, selectedItem); }
           catch (error) { setStatus("error", "Prompt queue paused", error.message, worker); }
           finally { worker.running = false; render(); }
         });
@@ -524,6 +544,47 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
     pending.finally(() => { if (worker.startPromise === pending) worker.startPromise = null; }).catch(() => {});
     return pending;
   };
+  const startOne = async (id, requestId) => {
+    await controllerReady;
+    await loaded;
+    await mutations;
+    const item = state.items.find(item => item.id === id && item.requestId === requestId && (item.status === "pending" || IN_FLIGHT.includes(item.status)));
+    if (!item) throw new Error("Runnable prompt not found in this request.");
+    const worker = workerFor(requestId);
+    if (worker.running || worker.starting || worker.startPromise) throw new Error("GPT queue is busy.");
+    return new Promise((resolve, reject) => {
+      start({ itemId: id, remote: false, accept: () => resolve({ accepted: true, asynchronous: true, tabId: worker.tabId }), reject }, worker).catch(reject);
+    });
+  };
+  const useSelectedChat = async (id, requestId) => {
+    await controllerReady;
+    await loaded;
+    await mutations;
+    const item = state.items.find(item => item.id === id && item.requestId === requestId && item.status === "submitted" && (item.error || !durableConversation(item.conversationUrl)));
+    if (!item) throw new Error("Submitted prompt needing a chat was not found in this request.");
+    const worker = workerFor(requestId);
+    if (worker.running || worker.starting || worker.startPromise) throw new Error("GPT queue is busy.");
+    worker.starting = true;
+    controls();
+    try {
+      if (!worker.tabId) throw errorWith("Select the ChatGPT tab containing this prompt first.", "GPT_TAB_REQUIRED");
+      return await navigator.locks.request(`${LOCK}-tab-${worker.tabId}`, { ifAvailable: true }, async lock => {
+        if (!lock) throw errorWith("This ChatGPT tab is already used by another request.", "GPT_TAB_BUSY");
+        const tab = await chrome.tabs.get(worker.tabId);
+        if (tab.pendingUrl || !durableConversation(tab.url)) throw errorWith("Select a saved ChatGPT conversation containing this prompt.", "GPT_CONVERSATION_UNAVAILABLE");
+        const info = await connect(worker);
+        const current = await chrome.tabs.get(worker.tabId);
+        if (current.pendingUrl || !durableConversation(info.conversationUrl) || conversationIdentity(tab.url) !== conversationIdentity(info.url || "about:blank") || conversationIdentity(tab.url) !== conversationIdentity(info.conversationUrl) || conversationIdentity(tab.url) !== conversationIdentity(current.url || "about:blank")) throw errorWith("Select a saved ChatGPT conversation containing this prompt.", "GPT_CONVERSATION_UNAVAILABLE");
+        if (info.userPromptCount !== 1) throw errorWith("The selected chat must contain exactly one visible prompt.", "GPT_CONVERSATION_AMBIGUOUS");
+        if (info.lastUserPrompt !== item.prompt.replace(/\s+/g, " ").trim()) throw errorWith("The selected chat's last prompt does not match this item.", "GPT_PROMPT_MISMATCH");
+        await patch(item, { conversationUrl: info.conversationUrl, error: null, code: null });
+        return { id, conversationUrl: info.conversationUrl };
+      });
+    } finally {
+      worker.starting = false;
+      render();
+    }
+  };
   const startAll = async () => {
     await controllerReady;
     await loaded;
@@ -576,7 +637,7 @@ export const setupGPT = ({ getRoot, ensurePermission, onSaved }) => {
       const starting = requestId === undefined ? allWorkers().some(worker => worker.starting) : !!worker?.starting;
       return { items: items.slice(offset, offset + limit).map(item => ({ ...item })), itemCount: items.length, totalItemCount: state.items.length, ...(request ? { request } : {}), running, starting, stopRequested: requestId === undefined ? busy() && allWorkers().filter(worker => worker.running || worker.starting).every(worker => worker.stop) : !!worker?.stop, tabId: worker?.tabId || receipt?.tabId || null, status: worker?.status || (receipt ? "Request ready" : $("gpt-title").textContent), detail: worker?.detail || "", ...(requestId === undefined ? { workers: [...workers.values()].map(({ requestId, tabId, running, starting, stop }) => ({ requestId, tabId, running, starting, stopRequested: stop })) } : {}) };
     },
-    startRemote,
+    startRemote, startOne, useSelectedChat,
     selectTab: async tabId => {
       await controllerReady; await loaded;
       requireIdle();

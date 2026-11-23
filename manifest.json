@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT Images to Tripo3d",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Turn text prompts into images, create Tripo 3D models, and save FBX files to your computer.",
   "minimum_chrome_version": "120",
   "permissions": [

@@ -10,7 +10,7 @@ const element = () => ({
   setAttribute() {}, addEventListener(type, action) { this.listeners.set(type, action); }, focus() {},
   querySelector() { return element(); }
 });
-const setup = async (t, { pending = false, unsafeAfterReceiverFailure = false, initialItems, permission = async () => {}, statusRead, noTabs = false, root = { name: "test-output" } } = {}) => {
+const setup = async (t, { pending = false, unsafeAfterReceiverFailure = false, initialItems, permission = async () => {}, statusRead, inspectPrompt = "Generate a test image", inspectPromptCount = 1, noTabs = false, root = { name: "test-output" } } = {}) => {
   const saved = { gptQueue: { tabId: 1, items: [{ id: "prompt", prompt: "Generate a test image", status: pending ? "pending" : "submitted", conversationUrl: pending ? null : chat }] } };
   if (initialItems) saved.gptQueue.items = structuredClone(initialItems);
   let rejectStorage = false;
@@ -28,6 +28,7 @@ const setup = async (t, { pending = false, unsafeAfterReceiverFailure = false, i
   const perTabStatus = new Map();
   let statusCalls = 0;
   let submits = 0;
+  let navigations = 0;
   let injections = 0;
   let switched = false;
   put("document", { getElementById: id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); }, createElement: element });
@@ -46,11 +47,11 @@ const setup = async (t, { pending = false, unsafeAfterReceiverFailure = false, i
       query: async () => [...tabs.values()].map(tab => ({ ...tab })),
       create: async data => { const tab = { id: nextTabId++, url: data.url, status: "complete", title: "ChatGPT" }; tabs.set(tab.id, tab); return { ...tab }; },
       remove: async id => { tabs.delete(id); },
-      update: async (id, data) => { Object.assign(tabs.get(id), data); },
+      update: async (id, data) => { navigations++; Object.assign(tabs.get(id), data); },
       get: async id => { if (!tabs.has(id)) throw new Error("No tab found"); return { ...tabs.get(id), ...(switched ? { url: "https://example.com/" } : {}) }; },
       sendMessage: async (id, message) => {
         const tab = tabs.get(id);
-        if (message.type === "gpt:inspect") return { ok: true, url: tab.url, conversationUrl: tab.url === "https://chatgpt.com/" ? null : tab.url, composer: true, turns: tab.url === "https://chatgpt.com/" ? 0 : 1 };
+        if (message.type === "gpt:inspect") return { ok: true, url: tab.url, conversationUrl: tab.url === "https://chatgpt.com/" ? null : tab.url, composer: true, lastUserPrompt: inspectPrompt, userPromptCount: inspectPromptCount, turns: tab.url === "https://chatgpt.com/" ? 0 : 1 };
         if (message.type === "gpt:submit") { submits++; tab.url = id === 1 ? chat : `https://chatgpt.com/c/chat-${id}`; return { ok: true, conversationUrl: tab.url }; }
         if (message.type === "gpt:status") {
           statusCalls++;
@@ -75,8 +76,19 @@ const setup = async (t, { pending = false, unsafeAfterReceiverFailure = false, i
   };
   const queue = await createQueue();
   const idle = async () => { const deadline = Date.now() + 12000; while (queue.busy()) { if (Date.now() >= deadline) throw new Error("Runner did not pause"); await new Promise(resolve => setTimeout(resolve, 10)); } };
-  return { queue, idle, saved, createQueue, nodes, tabs, hide, createBlockedQueue: () => setupGPT({ getRoot: () => root, ensurePermission: permission, onSaved: async () => {} }), holdRead: value => { holdRead = value; }, holdStorage: value => { holdStorage = value; }, failStorage: value => { rejectStorage = value; }, counts: () => ({ submits, statusCalls, injections }) };
+  return { queue, idle, saved, createQueue, nodes, tabs, hide, navigations: () => navigations, createBlockedQueue: () => setupGPT({ getRoot: () => root, ensurePermission: permission, onSaved: async () => {} }), holdRead: value => { holdRead = value; }, holdStorage: value => { holdStorage = value; }, failStorage: value => { rejectStorage = value; }, counts: () => ({ submits, statusCalls, injections }) };
 };
+
+test("legacy local draft links pause without navigating or submitting", async t => {
+  const url = "https://chatgpt.com/c/local-chatgpt%3Adraft";
+  const fixture = await setup(t, { initialItems: [{ id: "prompt", prompt: "Generate a test image", status: "submitted", conversationUrl: url }] });
+  await fixture.queue.startRemote(); await fixture.idle();
+  assert.equal(fixture.navigations(), 0);
+  assert.equal(fixture.counts().submits, 0);
+  assert.equal(fixture.saved.gptQueue.items[0].status, "submitted");
+  assert.equal(fixture.saved.gptQueue.items[0].conversationUrl, url);
+  assert.equal(fixture.saved.gptQueue.items[0].code, "GPT_CONVERSATION_UNAVAILABLE");
+});
 
 test("status retries and usage-limit resume preserve one submitted prompt", async t => {
   const fixture = await setup(t, { pending: true });
@@ -394,4 +406,73 @@ test("Start prompts in the dashboard starts scoped requests without a manual sel
   await fixture.idle();
   assert.equal(fixture.counts().submits, 2);
   assert.notEqual(fixture.queue.snapshot(0, 25, "chat-a").tabId, fixture.queue.snapshot(0, 25, "chat-b").tabId);
+});
+
+test("run once saves only its selected pending prompt despite other pending and in-flight items", async t => {
+  const root = memoryFolder();
+  const fixture = await setup(t, { root, initialItems: [
+    { id: "waiting", prompt: "Waiting image", status: "pending" },
+    { id: "existing", prompt: "Existing image", status: "submitted", conversationUrl: chat },
+    { id: "selected", prompt: "Selected image", status: "pending" }
+  ], statusRead: async (id, count, tab) => ({ ok: true, state: "ready", src: "image", conversationUrl: tab.url }) });
+  await fixture.queue.startOne("selected"); await fixture.idle();
+  const items = fixture.saved.gptQueue.items;
+  assert.deepEqual(items.map(item => item.status), ["pending", "submitted", "saved"]);
+  assert.equal(fixture.counts().submits, 1);
+  assert.equal(root.files.size, 1);
+  await assert.rejects(fixture.queue.startOne("selected"), /Runnable prompt not found/);
+  await assert.rejects(fixture.queue.startOne("waiting", "wrong-request"), /Runnable prompt not found/);
+});
+
+test("run once clears its selection after failure so a normal run resumes the queue", async t => {
+  let statusCalls = 0;
+  const fixture = await setup(t, { root: memoryFolder(), initialItems: [
+    { id: "existing", prompt: "Existing image", status: "submitted", conversationUrl: chat },
+    { id: "selected", prompt: "Selected image", status: "pending" },
+    { id: "waiting", prompt: "Waiting image", status: "pending" }
+  ], statusRead: async () => {
+    statusCalls++;
+    return { ok: true, state: "failed", code: statusCalls === 1 ? "GPT_NO_IMAGE" : "GPT_LIMIT", detail: "No image" };
+  } });
+  await fixture.queue.startOne("selected"); await fixture.idle();
+  assert.deepEqual(fixture.saved.gptQueue.items.map(item => item.status), ["submitted", "failed", "pending"]);
+  assert.equal(fixture.counts().submits, 1);
+  await fixture.queue.startRemote(); await fixture.idle();
+  assert.equal(statusCalls, 2);
+  assert.equal(fixture.saved.gptQueue.items[0].code, "GPT_LIMIT");
+  assert.equal(fixture.saved.gptQueue.items[2].status, "pending");
+  assert.equal(fixture.counts().submits, 1);
+});
+
+test("selected chat recovery attaches a matching conversation and resumes only that item", async t => {
+  const fixture = await setup(t, { initialItems: [
+    { id: "selected", prompt: "Generate a test image", status: "submitted", conversationUrl: null, error: "Unconfirmed" },
+    { id: "other", prompt: "Other image", status: "pending" }
+  ], statusRead: async () => ({ ok: true, state: "failed", code: "GPT_LIMIT", detail: "Limit reached" }) });
+  fixture.tabs.get(1).url = chat;
+  assert.equal((await fixture.queue.useSelectedChat("selected")).conversationUrl, chat);
+  assert.equal(fixture.saved.gptQueue.items[0].conversationUrl, chat);
+  await fixture.queue.startOne("selected"); await fixture.idle();
+  assert.equal(fixture.counts().submits, 0);
+  assert.equal(fixture.saved.gptQueue.items[1].status, "pending");
+  assert.equal(fixture.saved.gptQueue.items[0].code, "GPT_LIMIT");
+});
+
+test("selected chat recovery rejects mismatched prompts and ephemeral routes", async t => {
+  const fixture = await setup(t, { initialItems: [{ id: "selected", prompt: "Different prompt", status: "submitted", conversationUrl: null, error: "Unconfirmed" }] });
+  fixture.tabs.get(1).url = chat;
+  await assert.rejects(fixture.queue.useSelectedChat("selected"), { code: "GPT_PROMPT_MISMATCH" });
+  fixture.tabs.get(1).url = "https://chatgpt.com/c/local-chatgpt%3Adraft";
+  await assert.rejects(fixture.queue.useSelectedChat("selected"), { code: "GPT_CONVERSATION_UNAVAILABLE" });
+  assert.equal(fixture.saved.gptQueue.items[0].conversationUrl, null);
+  assert.equal(fixture.counts().submits, 0);
+});
+
+test("selected chat recovery rejects multiple prompts without changing the item", async t => {
+  const fixture = await setup(t, { inspectPromptCount: 2, initialItems: [{ id: "selected", prompt: "Generate a test image", status: "submitted", conversationUrl: null, error: "Unconfirmed" }] });
+  fixture.tabs.get(1).url = chat;
+  await assert.rejects(fixture.queue.useSelectedChat("selected"), { code: "GPT_CONVERSATION_AMBIGUOUS" });
+  assert.equal(fixture.saved.gptQueue.items[0].conversationUrl, null);
+  assert.equal(fixture.saved.gptQueue.items[0].error, "Unconfirmed");
+  assert.equal(fixture.counts().submits, 0);
 });
