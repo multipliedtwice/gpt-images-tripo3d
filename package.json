@@ -1,6 +1,6 @@
 {
   "name": "tripo-folder-runner",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "scripts": { "test": "node --test --test-concurrency=1 --test-timeout=30000 tests/*.test.js", "mcp": "node mcp/server.js", "package": "python3 scripts/package-release.py" },

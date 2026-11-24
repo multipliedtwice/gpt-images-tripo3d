@@ -23,6 +23,7 @@
   let capture = null;
   let mutation = null;
   let recoveringModel = null;
+  let emptyCandidate = null;
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const text = element => (element?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -142,7 +143,7 @@
       return null;
     }
   };
-  const assets = () => all('a[href*="/workspace/generate/"]').map(anchor => ({ id: idFromURL(anchor.href), url: anchor.href, anchor })).filter(asset => asset.id);
+  const assets = () => all('a[href*="/workspace/generate/"]').filter(anchor => anchor.closest('[role="tabpanel"]') || anchor.querySelector(MEDIA)).map(anchor => ({ id: idFromURL(anchor.href), url: anchor.href, anchor })).filter(asset => asset.id);
   const baselineNow = () => ({ url: location.href, modelId: idFromURL(location.href), assetIds: unique(assets().map(asset => asset.id)), at: Date.now() });
   const currentCost = () => {
     const match = buttonText(generateButton(), true).match(/^Generate\s+(0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)$/i);
@@ -309,6 +310,7 @@
 
   const status = async message => {
     ensureWorkspace();
+    if (message.resetUnavailableCheck) emptyCandidate = null;
     if (!message.baseline && !message.modelUrl) throw fail('The queue needs the saved generation baseline or the expected model URL before checking a result.', 'BASELINE_REQUIRED');
     const failed = failureMessage();
     if (failed) return { ok: true, state: 'failed', detail: failed, modelUrl: null, modelId: null };
@@ -316,7 +318,8 @@
     const expected = message.modelUrl ? idFromURL(workspaceURL(message.modelUrl).href) : null;
     const oldIds = new Set([baseline.modelId, ...(baseline.assetIds || [])].filter(Boolean));
     const currentId = idFromURL(location.href);
-    const newAssets = assets().filter(asset => !oldIds.has(asset.id));
+    const currentAssets = assets();
+    const newAssets = currentAssets.filter(asset => !oldIds.has(asset.id));
     const newIds = unique(newAssets.map(asset => asset.id));
     const currentIsCandidate = currentId && (expected ? currentId === expected : !oldIds.has(currentId));
     if (!expected && newIds.length > 1) {
@@ -325,6 +328,7 @@
       return { ok: true, state: 'failed', modelUrl: null, modelId: null, detail: 'More than one new model appeared. Select the correct model in Studio and use “Use selected model” in the runner.' };
     }
     if (!currentIsCandidate) {
+      emptyCandidate = null;
       readyCandidate = null;
       lastReady = null;
       if (expected) {
@@ -346,6 +350,19 @@
     const boundId = exportModelId(button);
     const busy = busyMessage();
     const modelUrl = location.href;
+    const hasAsset = currentAssets.some(asset => asset.id === currentId);
+    const hasExport = enabled(button) && (!boundId || boundId === currentId);
+    const empty = visibleAll('p').some(element => /^Ready For A New 3D Model\?$/i.test(text(element)));
+    if (expected && !hasAsset && !busy && !button && empty) {
+      const key = `${message.jobId || ''}|${expected}`;
+      if (!emptyCandidate || emptyCandidate.key !== key) emptyCandidate = { key, at: Date.now() };
+      if (Date.now() - emptyCandidate.at >= 15000) return { ok: true, state: 'failed', code: 'MODEL_UNAVAILABLE', modelUrl: null, modelId: null, detail: 'The saved model is unavailable in Studio. Use selected model or Regenerate after checking the job.' };
+    } else emptyCandidate = null;
+    if (!expected && !hasAsset && !hasExport) {
+      readyCandidate = null;
+      lastReady = null;
+      return { ok: true, state: 'waiting', modelUrl: null, modelId: null, detail: busy || 'Waiting for a new model identity. The previously selected model will not be exported.' };
+    }
     if (!enabled(button) || busy || (boundId && boundId !== currentId)) {
       readyCandidate = null;
       lastReady = null;

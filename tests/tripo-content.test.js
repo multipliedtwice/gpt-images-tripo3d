@@ -18,6 +18,7 @@ const element = (tag, children = [], attrs = {}, style = {}) => {
         part = part.trim();
         if (part === 'button' || part === 'span' || part === 'p' || part === 'small' || part === 'div' || part === 'img') return this.tagName.toLowerCase() === part;
         if (part === 'input[type="file"]') return this.tagName === 'INPUT' && attrs.type === 'file';
+        if (part === 'a[href*="/workspace/generate/"]') return this.tagName === 'A' && (attrs.href || '').includes('/workspace/generate/');
         if (part === 'button[aria-label="Upgrade" i]') return this.tagName === 'BUTTON' && attrs['aria-label'] === 'Upgrade';
         const attribute = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(part);
         return !!attribute && attrs[attribute[1]] !== undefined && (attribute[2] === undefined || attrs[attribute[1]] === attribute[2]);
@@ -25,6 +26,7 @@ const element = (tag, children = [], attrs = {}, style = {}) => {
     },
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; },
     querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     click() { this.clicks++; this.disabled = true; },
     dispatchEvent() {}
   };
@@ -61,7 +63,7 @@ const fixture = (prices, balance = '13404') => {
   });
   vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.fixture = { generateButton, currentCost, currentBalance, panelFor, imageInput, confirm: file => { uploaded = { panel: panelFor(imageInput()), file, sourceMarkers: [] }; } }; })();'), context);
   const request = message => new Promise(resolve => listener(message, { id: 'extension' }, resolve)).then(async result => { await Promise.resolve(); return result; });
-  return { api: context.fixture, request, button, input, panel, unrelated, confirm: () => {
+  return { api: context.fixture, request, button, input, panel, unrelated, body, location: context.location, advance: ms => { now += ms; }, confirm: () => {
     const file = { name: 'bird.png', size: 10, lastModified: 1 };
     input.files = [file]; context.fixture.confirm(file);
   } };
@@ -151,4 +153,145 @@ test('recovery shows the saved failure and resume instructions without triggerin
   assert.match($('recovery-detail').textContent, /Resume uploads it again/);
   assert.equal($('recovery-detail').innerHTML, undefined);
   assert.equal(state.current.status, 'prepared');
+});
+
+const studioURL = id => `https://studio.tripo3d.ai/workspace/generate/${id}`;
+const addNode = (parent, node) => { node.parentElement = parent; parent.childNodes.push(node); return node; };
+const selectModel = (page, id) => { page.location.pathname = `/workspace/generate/${id}`; page.location.href = studioURL(id); };
+const assetLink = (id, preview = false) => {
+  const anchor = element('a', preview ? [element('img')] : [], { href: studioURL(id) });
+  anchor.href = studioURL(id);
+  return anchor;
+};
+const modelStatus = (page, id = 'new-model') => page.request({ type: 'tripo:status', jobId: 'job', baseline: { modelId: 'old-model', assetIds: ['old-model'] }, ...(id ? { modelUrl: studioURL(id) } : {}) });
+
+test('stable empty selected model fails after settling rather than counting navigation as an asset', async () => {
+  const page = fixture([price('55')]); selectModel(page, 'new-model');
+  addNode(page.body, assetLink('new-model'));
+  addNode(page.body, element('p', ['Ready For A New 3D Model?']));
+  assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(14999); assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(1);
+  const result = await modelStatus(page);
+  assert.equal(result.code, 'MODEL_UNAVAILABLE');
+  assert.equal(result.state, 'failed');
+  assert.equal(page.button.clicks, 0);
+});
+
+test('temporary empty state recovers when the real asset and export appear', async () => {
+  const page = fixture([price('55')]); selectModel(page, 'new-model');
+  addNode(page.body, element('p', ['Ready For A New 3D Model?']));
+  assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(10000);
+  addNode(page.body, assetLink('new-model', true));
+  addNode(page.body, element('button', ['Export'], { 'data-trace-key': 'studio.workspace_generate.try_export_button', 'data-trace-params': '{"project_id":"new-model"}' }));
+  assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(2500); assert.equal((await modelStatus(page)).state, 'ready');
+});
+
+test('busy workspace does not become unavailable and nav-only new route is not published', async () => {
+  const page = fixture([price('55')]); selectModel(page, 'new-model');
+  addNode(page.body, assetLink('new-model'));
+  addNode(page.body, element('p', ['Ready For A New 3D Model?']));
+  addNode(page.body, element('div', [], { role: 'progressbar' }));
+  assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(30000); assert.equal((await modelStatus(page)).state, 'waiting');
+  const discovered = await modelStatus(page, null);
+  assert.equal(discovered.state, 'waiting');
+  assert.equal(discovered.modelId, null);
+});
+
+test('baseline and mismatched export controls never become ready', async () => {
+  const page = fixture([price('55')]); selectModel(page, 'old-model');
+  addNode(page.body, assetLink('old-model', true));
+  addNode(page.body, element('button', ['Export'], { 'data-trace-key': 'studio.workspace_generate.try_export_button', 'data-trace-params': '{"project_id":"old-model"}' }));
+  const baseline = await modelStatus(page, null);
+  assert.equal(baseline.state, 'waiting');
+  assert.equal(baseline.modelId, null);
+  selectModel(page, 'new-model');
+  assert.equal((await modelStatus(page)).state, 'waiting');
+  page.advance(30000); assert.equal((await modelStatus(page)).state, 'waiting');
+});
+
+test('dashboard propagates the unavailable code without modifying the job', async () => {
+  const state = { current: { id: 'job', status: 'generating', baseline: { assetIds: [] } } };
+  let saved = false;
+  const waitForModel = dashboardFunction('waitForModel', 'const exportStep', {
+    state, ensureStudio: async () => {}, studioMessage: async () => ({ state: 'failed', code: 'MODEL_UNAVAILABLE', detail: 'Saved model unavailable' }),
+    errorWith: (message, code) => Object.assign(new Error(message), { code }), saveJob: async () => { saved = true; }
+  });
+  await assert.rejects(waitForModel(), { code: 'MODEL_UNAVAILABLE' });
+  assert.equal(state.current.status, 'generating');
+  assert.equal(saved, false);
+});
+
+test('unavailable retry control is visible only for eligible jobs and disabled while busy', () => {
+  for (const [job, busy, hidden] of [
+    [{ status: 'generating', modelId: 'model', errorCode: 'MODEL_UNAVAILABLE' }, false, false],
+    [{ status: 'submitting', modelId: 'model', errorCode: 'MODEL_UNAVAILABLE' }, true, false],
+    [{ status: 'generating', modelId: 'model', errorCode: 'OTHER' }, false, true],
+    [{ status: 'generating', modelId: 'model', errorCode: 'MODEL_UNAVAILABLE', exported: true }, false, true],
+    [{ status: 'exporting', modelId: 'model', errorCode: 'MODEL_UNAVAILABLE' }, false, true]
+  ]) {
+    const nodes = new Map();
+    const $ = id => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); };
+    const state = { current: job, root: {}, tabId: 1, running: busy, starting: false };
+    dashboardFunction('updateControls', 'let tripoFilters', { $, state, hasSavedExport: value => !!value?.exported, gpt: null })();
+    assert.equal($('regenerate').hidden, hidden);
+    assert.equal($('regenerate').disabled, busy);
+  }
+});
+
+const retryFixture = (responses, overrides = {}) => {
+  let now = 0;
+  const job = { id: 'job', sourceName: 'bird.png', sourceHash: 'hash', folderName: 'bird', status: 'generating', modelId: 'new-model', modelUrl: studioURL('new-model'), baseline: { assetIds: ['old-model'] }, errorCode: 'MODEL_UNAVAILABLE', ...overrides };
+  const state = { root: {}, tabId: 1, current: { ...job }, running: false, starting: false };
+  const calls = [];
+  const regenerateJob = dashboardFunction('regenerateJob', 'const importExport', {
+    state, window: { confirm: () => true }, updateControls() {}, requestFolderPermission: async () => {},
+    navigator: { locks: { request: async (name, options, action) => action({}) } }, LOCK_NAME: 'lock',
+    errorWith: (message, code) => Object.assign(new Error(message), { code }), getJob: async () => ({ ...job }),
+    hasSavedExport: value => !!value.exported, ensureStudio: async () => {}, Date: { now: () => now }, sleep: async ms => { now += ms; },
+    studioMessage: async (type, payload) => { calls.push({ type, payload }); return type === 'tripo:status' ? responses.shift() || { state: 'waiting' } : { ok: true }; },
+    saveJob: async changes => { calls.push({ type: 'save', changes }); Object.assign(state.current, changes); },
+    startRun: async () => { calls.push({ type: 'start' }); }
+  });
+  return { job, state, calls, regenerateJob };
+};
+
+test('explicit retry rechecks unavailability before clearing only generation fields', async () => {
+  const fixture = retryFixture([{ state: 'waiting' }, { state: 'failed', code: 'MODEL_UNAVAILABLE' }]);
+  await fixture.regenerateJob();
+  assert.deepEqual(fixture.calls.map(call => call.type), ['tripo:status', 'tripo:status', 'tripo:forget-job', 'save', 'start']);
+  assert.equal(fixture.calls[0].payload.resetUnavailableCheck, true);
+  assert.equal(fixture.calls[1].payload.resetUnavailableCheck, false);
+  assert.equal(fixture.state.current.id, fixture.job.id);
+  assert.equal(fixture.state.current.sourceHash, fixture.job.sourceHash);
+  assert.equal(fixture.state.current.folderName, fixture.job.folderName);
+  assert.equal(fixture.state.current.modelId, null);
+});
+
+test('retry preserves the job if the model appears, remains uncertain, or a saved model is ineligible', async () => {
+  for (const [responses, overrides] of [
+    [[{ state: 'ready' }], {}],
+    [[{ state: 'waiting' }], {}],
+    [[], { errorCode: 'OTHER' }],
+    [[], { exported: true }]
+  ]) {
+    const fixture = retryFixture(responses, overrides);
+    await assert.rejects(fixture.regenerateJob());
+    assert.deepEqual(fixture.state.current, fixture.job);
+    assert.equal(fixture.calls.some(call => ['tripo:forget-job', 'save', 'start'].includes(call.type)), false);
+  }
+});
+
+test('fresh unavailable check resets the prior settling interval', async () => {
+  const page = fixture([price('55')]); selectModel(page, 'new-model');
+  addNode(page.body, element('p', ['Ready For A New 3D Model?']));
+  await modelStatus(page); page.advance(15000);
+  assert.equal((await modelStatus(page)).code, 'MODEL_UNAVAILABLE');
+  const fresh = await page.request({ type: 'tripo:status', jobId: 'job', baseline: { assetIds: ['old-model'] }, modelUrl: studioURL('new-model'), resetUnavailableCheck: true });
+  assert.equal(fresh.state, 'waiting');
+  page.advance(15000);
+  assert.equal((await modelStatus(page)).code, 'MODEL_UNAVAILABLE');
 });

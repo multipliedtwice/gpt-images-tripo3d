@@ -44,7 +44,7 @@ const updateControls = () => {
   $("start").disabled = busy || !state.root || (!state.tabId && !hasSavedExport(state.current));
   $("bind-model").disabled = busy || !state.tabId;
   $("regenerate").disabled = busy || !state.tabId;
-  $("regenerate").hidden = !state.current || !["submitting", "generating"].includes(state.current.status) || !!state.current.modelId || hasSavedExport(state.current);
+  $("regenerate").hidden = !state.current || !["submitting", "generating"].includes(state.current.status) || (!!state.current.modelId && state.current.errorCode !== "MODEL_UNAVAILABLE") || hasSavedExport(state.current);
   $("stop").disabled = !state.running || state.stop;
   $("stop").textContent = state.stop ? "Stopping after this model…" : "Stop after this model";
   $("grant-folder").hidden = !state.root || state.permission;
@@ -252,7 +252,7 @@ const waitForModel = async () => {
       await ensureStudio();
       continue;
     }
-    if (info.state === "failed") throw errorWith(info.detail || "Studio reported that this generation failed. Check it before resuming.", "GENERATION_FAILED");
+    if (info.state === "failed") throw errorWith(info.detail || "Studio reported that this generation failed. Check it before resuming.", info.code || "GENERATION_FAILED");
     if (info.modelUrl && info.modelId) {
       const url = modelURL(info.modelUrl);
       if (modelID(url) !== String(info.modelId).toLowerCase() && modelID(url) !== info.modelId) throw errorWith("Studio returned inconsistent model identifiers. Select the correct model before resuming.", "MODEL_MISMATCH");
@@ -459,8 +459,20 @@ const regenerateJob = async () => {
       const latest = await getJob(target.root, target.jobId);
       if (!latest || latest.status === "completed") throw errorWith("This job has already completed or changed in another control tab. Rescan the folder.", "JOB_CHANGED");
       state.current = latest;
-      if (latest.modelId || hasSavedExport(latest)) throw errorWith("This job already has a model or saved export. Use Resume instead.", "JOB_CHANGED");
+      if (!["submitting", "generating"].includes(latest.status) || hasSavedExport(latest) || (latest.modelId && latest.errorCode !== "MODEL_UNAVAILABLE")) throw errorWith("This job already has a model or saved export. Use Resume instead.", "JOB_CHANGED");
       await ensureStudio();
+      if (latest.modelId) {
+        if (!latest.modelUrl) throw errorWith("The saved model link is missing. Check Studio before trying again.", "MODEL_IDENTITY_MISSING");
+        let confirmed = false;
+        const deadline = Date.now() + 20000;
+        for (let attempt = 0; Date.now() < deadline; attempt++) {
+          const info = await studioMessage("tripo:status", { jobId: latest.id, baseline: latest.baseline, modelUrl: latest.modelUrl, resetUnavailableCheck: attempt === 0 }, Math.min(5000, deadline - Date.now()));
+          if (info.state === "failed" && info.code === "MODEL_UNAVAILABLE") { confirmed = true; break; }
+          if (info.state !== "waiting") break;
+          if (Date.now() < deadline) await sleep(Math.min(1000, deadline - Date.now()));
+        }
+        if (!confirmed) throw errorWith("Studio did not confirm that the saved model is unavailable. Check the model and use Resume.", "MODEL_NOT_CONFIRMED_UNAVAILABLE");
+      }
       await studioMessage("tripo:forget-job", { jobId: latest.id }, 5000);
       await saveJob({ status: "uploaded", baseline: null, submittedAt: null, modelUrl: null, modelId: null, error: null, errorCode: null });
     });
